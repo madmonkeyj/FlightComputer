@@ -107,19 +107,35 @@ This document provides AI assistants with comprehensive information about the Fl
 - **Update Rate:** 100 Hz (decimated)
 - **File:** `Inc/bmp581.h`, `Src/bmp581.c`
 
-### 5. GPS Module
-- **Interface:** USART3
-- **Protocol:** UBX (binary)
+### 5. GPS Module (u-blox SAM-M10Q)
+- **Hardware:** u-blox SAM-M10Q concurrent GNSS receiver
+- **Interface:** USART3 @ 115200 baud
+- **Protocol:** UBX (binary protocol)
+- **GNSS Constellations:** GPS, GLONASS, Galileo, BeiDou, QZSS (configurable)
+- **Dynamic Model:** Airborne <4g (configured for rocket flight)
+- **Fix Mode:** 3D only
 - **Data Provided:**
   - Position: Latitude, Longitude, Altitude (MSL)
-  - Velocity: North, East, Down components
+  - Velocity: North, East, Down components (NED frame)
   - Accuracy: Horizontal, Vertical, Speed
-  - Covariance: Position and velocity matrices
-  - DOP: PDOP, HDOP, VDOP, GDOP, TDOP, NDOP, EDOP
-  - Spoofing/jamming detection
-  - Differential corrections
-- **Time Pulse:** PC15 (PPS signal for synchronization)
-- **Update Rate:** 5-10 Hz (typical)
+  - Covariance: Position and velocity matrices (NAV-COV)
+  - DOP: PDOP, HDOP, VDOP, GDOP, TDOP, NDOP, EDOP (NAV-DOP)
+  - Course accuracy and climb rate
+  - Spoofing/jamming detection (NAV-STATUS)
+  - Differential corrections status
+  - Time to first fix
+- **UBX Messages Enabled:**
+  - NAV-PVT: Position, velocity, time
+  - NAV-COV: Covariance matrices for EKF integration
+  - NAV-DOP: Dilution of precision values
+  - NAV-VELNED: Velocity in NED frame
+  - NAV-STATUS: Fix quality and spoofing detection
+- **Configuration:** NMEA disabled, UBX-only for efficiency
+- **Time Pulse:** PC15 (1 PPS signal for time synchronization)
+- **Control Pins:**
+  - RST_SAM (PA1): Hardware reset
+  - INT_SAM (PA0): Interrupt/event notification
+- **Update Rate:** 5-10 Hz (typical), configurable
 - **File:** `Inc/gps_module.h`, `Src/gps_module.c`
 
 ---
@@ -710,9 +726,59 @@ Files contain STM32CubeMX-generated code with protected sections:
 
 ---
 
+## Current Implementation Status
+
+### What's Implemented ✓
+- Complete sensor driver infrastructure (IMU, magnetometer, barometer, high-g accel)
+- GPS module with comprehensive UBX protocol support (SAM-M10Q)
+- Sensor Manager with DMA-based acquisition and priority scheduling
+- I2C DMA Arbiter for conflict-free multi-device I2C bus access
+- Mahony AHRS filter with hardware CORDIC acceleration
+- QSPI flash interface for data storage
+- Hardware math acceleration (CORDIC)
+- Multiple communication interfaces (USB CDC, 3x USART, I2C, SPI, QSPI)
+
+### What's Missing ✗
+- **Main application loop** (currently empty!)
+- Sensor initialization in main.c
+- Mahony filter initialization and updates
+- Interrupt handler connections
+- Health monitoring and watchdog
+- Sensor calibration routines
+- Data logging implementation
+- Telemetry protocol
+- Configuration management system
+- Error recovery and graceful degradation
+- Flight state machine
+- Ground testing utilities
+
+### Critical Notes for AI Assistants
+
+1. **The main loop is empty** - This is the highest priority issue. See `Src/main.c:119-125`.
+
+2. **No sensors are initialized** - While drivers exist, nothing in main.c calls `SensorManager_Init()` or any sensor initialization.
+
+3. **GPS hardware is SAM-M10Q** - All documentation should reference the u-blox SAM-M10Q specifically.
+
+4. **Refer to REFACTOR_RECOMMENDATIONS.md** - Comprehensive refactoring analysis with 20+ specific recommendations prioritized by severity.
+
+5. **This is a flight-critical system** - All changes must consider real-time constraints, deterministic timing, and safety implications.
+
+6. **Timing is critical** - Mahony filter requires minimum 500 Hz updates. Don't introduce blocking calls in the main loop.
+
+---
+
 ## Version History
 
-- **Initial Version:** Created 2025-11-20 - Comprehensive codebase documentation for AI assistants
+- **Version 1.0** (2025-11-20): Initial comprehensive codebase documentation
+- **Version 1.1** (2025-11-20): Added SAM-M10Q GPS specification and implementation status notes
+
+---
+
+## Related Documentation
+
+- **REFACTOR_RECOMMENDATIONS.md** - Detailed refactoring analysis with prioritized recommendations
+- **README.md** - Project overview
 
 ---
 
