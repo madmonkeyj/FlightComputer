@@ -60,6 +60,8 @@ typedef struct {
     uint16_t imu_odr_hz;
     uint16_t mag_odr_hz;
     uint16_t baro_odr_hz;
+    uint16_t highg_odr_hz;       /* High-G accelerometer ODR (Hz) */
+    uint16_t main_loop_hz;       /* Expected main loop rate (Hz) for decimation calculation */
     uint8_t  imu_accel_fs;
     uint8_t  imu_gyro_fs;
     bool     use_mag;

@@ -22,18 +22,46 @@ static SensorManager_Scales_t scales;
 static SensorManager_RawData_t latest_data;
 static uint32_t last_read_time_us = 0;
 
-/* Decimation counters for low-priority sensors */
+/* Decimation counters and factors for low-priority sensors */
 static uint8_t baro_decimation_counter = 0;
 static uint8_t highg_decimation_counter = 0;
+static uint8_t baro_decimation_factor = 5;   /* Calculated from config in Init() */
+static uint8_t highg_decimation_factor = 10; /* Calculated from config in Init() */
 
-/* Altitude calculation */
-#define STANDARD_SEA_LEVEL_PA   101325.0f
+/* Sensor scaling constants */
+/* ICM42688 IMU scaling factors */
+#define ICM42688_GYRO_SCALE_2000DPS     16.4f       /* LSB per deg/s at ±2000dps */
+#define ICM42688_ACCEL_SCALE_16G        2048.0f     /* LSB per g at ±16g */
+#define ICM42688_TEMP_SCALE             132.48f     /* LSB per °C */
+#define ICM42688_TEMP_OFFSET            25.0f       /* Temperature offset (°C) */
+
+/* MMC5983MA magnetometer scaling */
+#define MMC5983MA_MAG_SCALE             16384.0f    /* LSB per Gauss */
+#define GAUSS_TO_MICROTESLA             100.0f      /* 1 Gauss = 100 µT */
+
+/* BMP581 barometer scaling */
+#define BMP581_PRESSURE_SCALE           64.0f       /* LSB per Pascal */
+#define BMP581_TEMP_SCALE               65536.0f    /* LSB per °C */
+
+/* Physics constants */
+#define GRAVITY_MSS                     9.81f       /* Standard gravity (m/s²) */
+#define BAROMETRIC_CONSTANT_M           44330.0f    /* Barometric altitude formula constant (m) */
+#define BAROMETRIC_EXPONENT             0.1903f     /* Barometric altitude formula exponent */
+#define STANDARD_SEA_LEVEL_PA           101325.0f   /* Standard sea level pressure (Pa) */
+
+/* Conversion constants */
+#define DEG_TO_RAD                      (M_PI / 180.0f)
+#ifndef M_PI
+#define M_PI                            3.14159265358979323846f
+#endif
 
 /* Default configuration */
 static const SensorManager_Config_t default_config = {
     .imu_odr_hz = 1000,
     .mag_odr_hz = 1000,
     .baro_odr_hz = 100,
+    .highg_odr_hz = 50,      /* High-G accel decimated to 50 Hz */
+    .main_loop_hz = 500,     /* Assume 500 Hz main loop */
     .imu_accel_fs = 0,
     .imu_gyro_fs = 0,
     .use_mag = true,
@@ -46,40 +74,34 @@ static inline uint32_t GetMicros(void);
 static void CalculateScalingFactors(void);
 static float CalculateAltitude(float pressure_pa, float sea_level_pa);
 
-/* Microsecond timer */
+/* Microsecond timer using DWT cycle counter (race-free, higher precision) */
 static inline uint32_t GetMicros(void) {
-    uint32_t m = HAL_GetTick();
-    uint32_t u = SysTick->LOAD - SysTick->VAL;
-
-    if (SCB->ICSR & SCB_ICSR_PENDSTSET_Msk) {
-        m++;
-        u = SysTick->LOAD - SysTick->VAL;
-    }
-
-    return (m * 1000) + (u * 1000 / SysTick->LOAD);
+    /* DWT cycle counter is incremented on every CPU cycle */
+    /* At 170 MHz: 1 µs = 170 cycles */
+    return DWT->CYCCNT / (SystemCoreClock / 1000000U);
 }
 
 static void CalculateScalingFactors(void) {
-    /* ICM42688 at ±16g: 2048 LSB/g */
-    scales.accel_scale = 1.0f / 2048.0f;
+    /* ICM42688 accelerometer */
+    scales.accel_scale = 1.0f / ICM42688_ACCEL_SCALE_16G;
 
-    /* ICM42688 at ±2000dps: 16.4 LSB/(deg/s) */
-    scales.gyro_scale = 1.0f / 16.4f;
+    /* ICM42688 gyroscope */
+    scales.gyro_scale = 1.0f / ICM42688_GYRO_SCALE_2000DPS;
 
-    /* MMC5983MA: 16384 LSB/Gauss */
-    scales.mag_scale = 1.0f / 16384.0f;
+    /* MMC5983MA magnetometer */
+    scales.mag_scale = 1.0f / MMC5983MA_MAG_SCALE;
 
-    /* ICM42688 Temperature */
-    scales.temp_scale = 1.0f / 132.48f;
-    scales.temp_offset = 25.0f;
+    /* ICM42688 temperature */
+    scales.temp_scale = 1.0f / ICM42688_TEMP_SCALE;
+    scales.temp_offset = ICM42688_TEMP_OFFSET;
 
-    /* BMP581: 64 LSB/Pa */
-    scales.pressure_scale = 1.0f / 64.0f;
+    /* BMP581 barometer */
+    scales.pressure_scale = 1.0f / BMP581_PRESSURE_SCALE;
 }
 
 static float CalculateAltitude(float pressure_pa, float sea_level_pa) {
     /* Standard barometric formula: h = 44330 * (1 - (P/P0)^0.1903) */
-    return 44330.0f * (1.0f - powf(pressure_pa / sea_level_pa, 0.1903f));
+    return BAROMETRIC_CONSTANT_M * (1.0f - powf(pressure_pa / sea_level_pa, BAROMETRIC_EXPONENT));
 }
 
 HAL_StatusTypeDef SensorManager_Init(const SensorManager_Config_t *user_config) {
@@ -92,11 +114,31 @@ HAL_StatusTypeDef SensorManager_Init(const SensorManager_Config_t *user_config) 
         memcpy(&config, &default_config, sizeof(SensorManager_Config_t));
     }
 
+    /* Initialize DWT cycle counter for microsecond timing */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;  /* Enable trace */
+    DWT->CYCCNT = 0;                                  /* Reset counter */
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;             /* Enable counter */
+
     /* Initialize I2C DMA arbiter */
     I2C_DMA_Arbiter_Init();
 
     /* Calculate scaling factors */
     CalculateScalingFactors();
+
+    /* Calculate decimation factors from configuration */
+    if (config.baro_odr_hz > 0 && config.main_loop_hz > 0) {
+        baro_decimation_factor = config.main_loop_hz / config.baro_odr_hz;
+        if (baro_decimation_factor == 0) baro_decimation_factor = 1;
+    } else {
+        baro_decimation_factor = 5;  /* Default fallback */
+    }
+
+    if (config.highg_odr_hz > 0 && config.main_loop_hz > 0) {
+        highg_decimation_factor = config.main_loop_hz / config.highg_odr_hz;
+        if (highg_decimation_factor == 0) highg_decimation_factor = 1;
+    } else {
+        highg_decimation_factor = 10;  /* Default fallback */
+    }
 
     /* Initialize statistics */
     memset(&sensor_status, 0, sizeof(SensorManager_Status_t));
@@ -173,14 +215,12 @@ HAL_StatusTypeDef SensorManager_ReadRaw(SensorManager_RawData_t *data) {
         data->mag_valid = 0;
     }
 
-    /* DECIMATE BARO to target rate (e.g., 100Hz when running at 500Hz loop) */
-    /* Calculate decimation: loop_rate / baro_rate */
-    /* For 500Hz loop with 100Hz baro: read every 5th call */
-    uint8_t baro_decimation = 5;  // TODO: Calculate based on config
+    /* DECIMATE BARO to target rate */
+    /* Decimation factor calculated from config in SensorManager_Init() */
     static BMP581_Data_t last_valid_baro_data = {0};
 
     if (config.use_baro) {
-        if (baro_decimation_counter++ >= baro_decimation) {
+        if (baro_decimation_counter++ >= baro_decimation_factor) {
             baro_decimation_counter = 0;
 
             /* Try to read, but skip if arbiter busy (fail-fast) */
@@ -226,8 +266,7 @@ HAL_StatusTypeDef SensorManager_ReadRaw(SensorManager_RawData_t *data) {
 
     /* DECIMATE High-G (lowest priority, shock detection only) */
     if (config.use_high_g) {
-        uint8_t highg_decimation = 10;  // Read every 10th call
-        if (highg_decimation_counter++ >= highg_decimation) {
+        if (highg_decimation_counter++ >= highg_decimation_factor) {
             highg_decimation_counter = 0;
 
             /* Skip if arbiter busy */
@@ -310,11 +349,11 @@ void SensorManager_ConvertToScaled(const SensorManager_RawData_t *raw,
     /* Barometer conversion */
     if (raw->baro_valid) {
         scaled->pressure_pa = (float)raw->pressure_raw * scales.pressure_scale;
-        scaled->temperature_c = (float)raw->temperature_raw * (1.0f / 65536.0f);  // BMP581 temp scale
+        scaled->temperature_c = (float)raw->temperature_raw * (1.0f / BMP581_TEMP_SCALE);
         scaled->altitude_m = CalculateAltitude(scaled->pressure_pa, STANDARD_SEA_LEVEL_PA);
     } else {
         scaled->pressure_pa = 0.0f;
-        scaled->temperature_c = 25.0f;
+        scaled->temperature_c = ICM42688_TEMP_OFFSET;
         scaled->altitude_m = 0.0f;
     }
 
@@ -379,20 +418,17 @@ void SensorManager_GetMahonyData(const SensorManager_RawData_t *raw,
                                   float *ax, float *ay, float *az,
                                   float *mx, float *my, float *mz) {
     // Gyro: Convert from LSB to rad/s
-    // ICM42688 at ±2000dps: 16.4 LSB/(deg/s)
-    *gx = (raw->gyro_x / 16.4f) * DEG_TO_RAD;
-    *gy = (raw->gyro_y / 16.4f) * DEG_TO_RAD;
-    *gz = (raw->gyro_z / 16.4f) * DEG_TO_RAD;
+    *gx = (raw->gyro_x / ICM42688_GYRO_SCALE_2000DPS) * DEG_TO_RAD;
+    *gy = (raw->gyro_y / ICM42688_GYRO_SCALE_2000DPS) * DEG_TO_RAD;
+    *gz = (raw->gyro_z / ICM42688_GYRO_SCALE_2000DPS) * DEG_TO_RAD;
 
     // Accel: Convert from LSB to m/s²
-    // ICM42688 at ±16g: 2048 LSB/g
-    *ax = (raw->accel_x / 2048.0f) * 9.81f;
-    *ay = (raw->accel_y / 2048.0f) * 9.81f;
-    *az = (raw->accel_z / 2048.0f) * 9.81f;
+    *ax = (raw->accel_x / ICM42688_ACCEL_SCALE_16G) * GRAVITY_MSS;
+    *ay = (raw->accel_y / ICM42688_ACCEL_SCALE_16G) * GRAVITY_MSS;
+    *az = (raw->accel_z / ICM42688_ACCEL_SCALE_16G) * GRAVITY_MSS;
 
     // Mag: Convert from LSB to µT (microTesla)
-    // MMC5983MA: 16384 LSB/Gauss, 1 Gauss = 100 µT
-    *mx = (raw->mag_x / 16384.0f) * 100.0f;
-    *my = (raw->mag_y / 16384.0f) * 100.0f;
-    *mz = (raw->mag_z / 16384.0f) * 100.0f;
+    *mx = (raw->mag_x / MMC5983MA_MAG_SCALE) * GAUSS_TO_MICROTESLA;
+    *my = (raw->mag_y / MMC5983MA_MAG_SCALE) * GAUSS_TO_MICROTESLA;
+    *mz = (raw->mag_z / MMC5983MA_MAG_SCALE) * GAUSS_TO_MICROTESLA;
 }
