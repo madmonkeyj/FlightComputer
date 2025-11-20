@@ -109,17 +109,19 @@ HAL_StatusTypeDef I2C_DMA_Arbiter_RequestTransfer(
 
 /**
  * @brief Check if arbiter is busy
+ * @note Parameter hi2c is reserved for future multi-bus support
  */
 bool I2C_DMA_Arbiter_IsBusy(I2C_HandleTypeDef *hi2c) {
-    (void)hi2c; // Unused parameter
+    (void)hi2c; /* Reserved for future multi-bus support */
     return arbiter_state.busy;
 }
 
 /**
  * @brief Get current device using the bus
+ * @note Parameter hi2c is reserved for future multi-bus support
  */
 I2C_DMA_Device_t I2C_DMA_Arbiter_GetCurrentDevice(I2C_HandleTypeDef *hi2c) {
-    (void)hi2c; // Unused parameter
+    (void)hi2c; /* Reserved for future multi-bus support */
     return arbiter_state.current_device;
 }
 

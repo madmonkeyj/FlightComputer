@@ -14,6 +14,13 @@
 /* Private variables */
 static volatile uint32_t baro_dma_callback_count = 0;
 static uint8_t __attribute__((aligned(4))) baro_rx_buffer[8];
+
+/**
+ * @brief DMA busy flag for barometer reads
+ * @note Volatile is sufficient for single-core Cortex-M4
+ * @note DMA callbacks run in interrupt context but don't preempt themselves
+ * @note Flag is set before DMA request and cleared in completion callback
+ */
 static volatile bool baro_dma_busy = false;
 
 /* Constants */
