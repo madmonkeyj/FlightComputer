@@ -15,6 +15,10 @@
 #include <math.h>
 #include "mahony_filter.h"
 
+/* Input validation macros */
+#define VALIDATE_PTR(ptr) do { if ((ptr) == NULL) return HAL_ERROR; } while(0)
+#define VALIDATE_PTR_VOID(ptr) do { if ((ptr) == NULL) return; } while(0)
+
 /* Private variables */
 static SensorManager_Config_t config;
 static SensorManager_Status_t sensor_status;
@@ -178,6 +182,8 @@ HAL_StatusTypeDef SensorManager_Init(const SensorManager_Config_t *user_config) 
 }
 
 HAL_StatusTypeDef SensorManager_ReadRaw(SensorManager_RawData_t *data) {
+    VALIDATE_PTR(data);
+
     HAL_StatusTypeDef hal_status = HAL_OK;
     ICM42688_Data_t imu_data;
 
@@ -317,6 +323,8 @@ HAL_StatusTypeDef SensorManager_ReadRaw(SensorManager_RawData_t *data) {
 }
 
 HAL_StatusTypeDef SensorManager_ReadScaled(SensorManager_ScaledData_t *data) {
+    VALIDATE_PTR(data);
+
     SensorManager_RawData_t raw;
     HAL_StatusTypeDef hal_status;
 
@@ -331,6 +339,9 @@ HAL_StatusTypeDef SensorManager_ReadScaled(SensorManager_ScaledData_t *data) {
 
 void SensorManager_ConvertToScaled(const SensorManager_RawData_t *raw,
                                     SensorManager_ScaledData_t *scaled) {
+    VALIDATE_PTR_VOID(raw);
+    VALIDATE_PTR_VOID(scaled);
+
     /* Accelerometer conversion */
     scaled->accel_x_g = (float)raw->accel_x * scales.accel_scale;
     scaled->accel_y_g = (float)raw->accel_y * scales.accel_scale;
@@ -417,6 +428,17 @@ void SensorManager_GetMahonyData(const SensorManager_RawData_t *raw,
                                   float *gx, float *gy, float *gz,
                                   float *ax, float *ay, float *az,
                                   float *mx, float *my, float *mz) {
+    VALIDATE_PTR_VOID(raw);
+    VALIDATE_PTR_VOID(gx);
+    VALIDATE_PTR_VOID(gy);
+    VALIDATE_PTR_VOID(gz);
+    VALIDATE_PTR_VOID(ax);
+    VALIDATE_PTR_VOID(ay);
+    VALIDATE_PTR_VOID(az);
+    VALIDATE_PTR_VOID(mx);
+    VALIDATE_PTR_VOID(my);
+    VALIDATE_PTR_VOID(mz);
+
     // Gyro: Convert from LSB to rad/s
     *gx = (raw->gyro_x / ICM42688_GYRO_SCALE_2000DPS) * DEG_TO_RAD;
     *gy = (raw->gyro_y / ICM42688_GYRO_SCALE_2000DPS) * DEG_TO_RAD;
