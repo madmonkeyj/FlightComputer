@@ -65,29 +65,10 @@ HAL_StatusTypeDef I2C_DMA_Arbiter_RequestTransfer(
             break;
     }
 
-    /* Check if arbiter is busy */
+    /* Check if arbiter is busy - non-preemptive design */
     if (arbiter_state.busy) {
-        /* Check priority - only allow preemption by higher priority device */
-        if (device >= arbiter_state.current_device) {
-            /* Equal or lower priority - deny access */
-            switch (device) {
-                case I2C_DMA_DEVICE_MAG:
-                    arbiter_state.stats.mag_conflicts++;
-                    break;
-                case I2C_DMA_DEVICE_BARO:
-                    arbiter_state.stats.baro_conflicts++;
-                    break;
-                case I2C_DMA_DEVICE_HIGHG:
-                    arbiter_state.stats.highg_conflicts++;
-                    break;
-                default:
-                    break;
-            }
-            return HAL_BUSY;
-        }
-
-        /* Higher priority device - abort current transfer (not implemented for now) */
-        /* For simplicity, we just deny access. Preemption adds complexity. */
+        /* Arbiter busy - deny all requests regardless of priority */
+        /* Non-preemptive scheduling is simpler and more predictable */
         switch (device) {
             case I2C_DMA_DEVICE_MAG:
                 arbiter_state.stats.mag_conflicts++;
