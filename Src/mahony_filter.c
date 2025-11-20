@@ -11,6 +11,9 @@
 
 #include "mahony_filter.h"
 
+/* Input validation macros */
+#define VALIDATE_PTR_VOID(ptr) do { if ((ptr) == NULL) return; } while(0)
+
 /* Magnetometer alignment compensation matrix - IDENTITY (no compensation for MMC5983MA) */
 static const RotationMatrix_t MAG_ALIGNMENT_COMPENSATION = {
     .m = {
@@ -41,6 +44,8 @@ float Mahony_InvSqrt(float number) {
  * @brief Normalize a quaternion (unchanged)
  */
 void Mahony_QuaternionNormalize(Quaternion_t *q) {
+    VALIDATE_PTR_VOID(q);
+
     float norm = Mahony_InvSqrt(q->q0 * q->q0 + q->q1 * q->q1 + q->q2 * q->q2 + q->q3 * q->q3);
     q->q0 *= norm;
     q->q1 *= norm;
@@ -57,6 +62,9 @@ void Mahony_QuaternionNormalize(Quaternion_t *q) {
  *       - Yaw: rotation about Z axis (heading)
  */
 void Mahony_QuaternionToEuler(const Quaternion_t *q, EulerAngles_t *euler) {
+    VALIDATE_PTR_VOID(q);
+    VALIDATE_PTR_VOID(euler);
+
     /* Roll (X-axis rotation) - CORDIC ATAN2 */
     float sinr_cosp = 2.0f * (q->q0 * q->q1 + q->q2 * q->q3);
     float cosr_cosp = 1.0f - 2.0f * (q->q1 * q->q1 + q->q2 * q->q2);
@@ -79,6 +87,9 @@ void Mahony_QuaternionToEuler(const Quaternion_t *q, EulerAngles_t *euler) {
  * @brief Convert quaternion to rotation matrix (unchanged)
  */
 void Mahony_QuaternionToDCM(const Quaternion_t *q, RotationMatrix_t *dcm) {
+    VALIDATE_PTR_VOID(q);
+    VALIDATE_PTR_VOID(dcm);
+
     float q0q0 = q->q0 * q->q0;
     float q0q1 = q->q0 * q->q1;
     float q0q2 = q->q0 * q->q2;
