@@ -7,6 +7,7 @@
 
 #include "bmp581.h"
 #include "i2c_dma_arbiter.h"
+#include "sensor_driver_common.h"
 #include <math.h>
 #include "debug_utils.h"
 
@@ -21,6 +22,19 @@ static volatile bool baro_dma_busy = false;
 /* Conversion constants (from datasheet) */
 #define BMP581_PRESS_SCALE      (1.0f / 64.0f)     // Pa per LSB
 #define BMP581_TEMP_SCALE       (1.0f / 65536.0f)  // °C per LSB
+
+/* Common driver configuration for DMA reads */
+static const I2C_Sensor_Driver_t baro_driver = {
+    .hi2c = &hi2c1,
+    .dev_address = BMP581_I2C_ADDR,
+    .arbiter_device = I2C_DMA_DEVICE_BARO,
+    .dma_busy_flag = &baro_dma_busy,
+    .dma_buffer = baro_rx_buffer,
+    .dma_callback = BMP581_DMA_Complete_Callback,
+    .timeout_ms = BMP581_I2C_TIMEOUT,
+    .max_retries = 0,  /* Fail fast to maintain loop rate */
+    .retry_delay_ms = 0
+};
 
 /* Private function prototypes */
 static HAL_StatusTypeDef BMP581_WriteRegister(uint8_t reg, uint8_t value);
@@ -42,62 +56,7 @@ HAL_StatusTypeDef BMP581_ReadRegister(uint8_t reg, uint8_t *value) {  // Remove 
 }
 
 static HAL_StatusTypeDef BMP581_ReadRegisters(uint8_t reg, uint8_t *buffer, uint8_t len) {
-    HAL_StatusTypeDef status;
-    uint32_t wait_start;
-
-    /* Wait if our previous DMA is still busy */
-    wait_start = HAL_GetTick();
-    while (baro_dma_busy) {
-        if (HAL_GetTick() - wait_start > BMP581_I2C_TIMEOUT) {
-            return HAL_TIMEOUT;
-        }
-    }
-
-    /* Mark our device as busy */
-    baro_dma_busy = true;
-
-    /* Request DMA transfer through arbiter */
-    status = I2C_DMA_Arbiter_RequestTransfer(
-        &hi2c1,
-        I2C_DMA_DEVICE_BARO,
-        BMP581_I2C_ADDR,
-        reg,
-        I2C_MEMADD_SIZE_8BIT,
-        baro_rx_buffer,
-        len,
-        BMP581_DMA_Complete_Callback
-    );
-
-    if (status == HAL_BUSY) {
-        /* Arbiter is busy - fail fast to maintain loop rate */
-        /* BARO has medium priority, so it's OK to skip reads */
-        baro_dma_busy = false;
-        return HAL_BUSY;
-    }
-
-    if (status != HAL_OK) {
-        baro_dma_busy = false;
-        return status;
-    }
-
-    /* Wait for completion */
-    uint32_t timeout = HAL_GetTick() + BMP581_I2C_TIMEOUT;
-    while (baro_dma_busy && HAL_GetTick() < timeout) {
-        __NOP();
-    }
-
-    if (baro_dma_busy) {
-        HAL_I2C_Master_Abort_IT(&hi2c1, BMP581_I2C_ADDR);
-        baro_dma_busy = false;
-        return HAL_TIMEOUT;
-    }
-
-    /* Copy from DMA buffer */
-    for (uint8_t i = 0; i < len; i++) {
-        buffer[i] = baro_rx_buffer[i];
-    }
-
-    return HAL_OK;
+    return I2C_Sensor_ReadRegisters_DMA(&baro_driver, reg, buffer, len);
 }
 
 static float BMP581_ConvertPressure(int32_t raw_press) {
