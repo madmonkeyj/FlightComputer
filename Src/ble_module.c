@@ -819,19 +819,13 @@ static bool BLE_StartDMA(void) {
 }
 
 /**
- * @brief UART RX Event callback - handles idle line detection for DMA
- * @note Called when UART idle line is detected (message boundary)
- * @note Both BLE (UART1) and GPS (UART3) use this for DMA circular buffer
+ * @brief BLE UART RX Event handler - called from unified callback in gps_module.c
+ * @note This is called when UART idle line is detected (message boundary)
  */
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
-    (void)Size;  /* Size parameter not used in circular mode */
-
-    if (huart->Instance == USART1) {
-        /* BLE: Update DMA write position on idle line detection */
-        last_dma_write_pos = BLE_RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
-        last_rx_time = HAL_GetTick();
-    }
-    /* Note: GPS (USART3) idle line handling is in gps_module.c */
+void BLE_UART_RxEventCallback(void) {
+    /* BLE: Update DMA write position on idle line detection */
+    last_dma_write_pos = BLE_RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
+    last_rx_time = HAL_GetTick();
 }
 
 /* Legacy compatibility functions - deprecated with DMA implementation */

@@ -10,6 +10,7 @@
   */
 
 #include "gps_module.h"
+#include "ble_module.h"  // For BLE_UART_RxEventCallback
 #include "debug_utils.h"
 #include "usart.h"
 #include <string.h>
@@ -762,17 +763,24 @@ static void GPS_ParseAndExtractNAVSTATUS(uint8_t* payload, uint16_t len) {
 }
 
 
-// This is the HAL callback for UART events (including IDLE line).
+/**
+ * @brief Unified UART RX Event callback - handles idle line detection for all UARTs
+ * @note Called when UART idle line is detected (message boundary)
+ * @note Handles both GPS (USART3) and BLE (USART1) DMA circular buffers
+ */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
+    (void)Size;  /* Size parameter not used in circular mode */
+
     if (huart->Instance == USART3)
     {
-        // --- MODIFIED ---
-        // This is the key to the solution. When an Idle event occurs,
-        // we take a snapshot of the DMA's current position.
-        // The main loop will then safely process data up to this point.
+        /* GPS: Update DMA write position on idle line detection */
         last_dma_write_pos = GPS_RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_usart3_rx);
-        // ----------------
+    }
+    else if (huart->Instance == USART1)
+    {
+        /* BLE: Delegate to BLE module handler */
+        BLE_UART_RxEventCallback();
     }
 }
 
