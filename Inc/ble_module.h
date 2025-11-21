@@ -162,6 +162,14 @@ bool BLE_Configure_NoConfig(void);
  */
 bool BLE_GetLastCommand(char* command_buffer, size_t buffer_size);
 
+/* Internal callback for DMA idle line detection */
+/**
+ * @brief BLE UART RX Event handler - called from unified HAL_UARTEx_RxEventCallback
+ * @note Internal function called by GPS module's unified UART callback
+ * @note Do not call this directly - it's invoked automatically on idle line detection
+ */
+void BLE_UART_RxEventCallback(void);
+
 /* Legacy compatibility functions - DEPRECATED with DMA implementation */
 /* These are no-ops in DMA mode - kept for backward compatibility only */
 void HandleReceivedByte(uint8_t byte);  /* @deprecated No-op in DMA mode */
