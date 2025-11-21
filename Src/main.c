@@ -30,6 +30,8 @@
 #include "sensor_manager.h"
 #include "mahony_filter.h"
 #include "gps_module.h"
+#include "ble_module.h"
+#include "data_logger.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -53,17 +55,49 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+/* BLE Test Variables */
+static uint32_t ble_test_counter = 0;
+static uint32_t last_ble_send_time = 0;
+static bool ble_initialized = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-
+/* BLE Command Callback */
+static void BLE_CommandCallback(const char* command);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/**
+ * @brief BLE command callback - handles custom commands
+ * @param command The received command string
+ * @note Built-in commands (start, stop, status, help, erase) are handled by BLE module
+ * @note This callback is for additional custom commands
+ */
+static void BLE_CommandCallback(const char* command) {
+    char response[128];
+
+    // Example: custom "test" command
+    if (strcmp(command, "test") == 0) {
+        snprintf(response, sizeof(response), "BLE Test OK! Counter=%lu\r\n", ble_test_counter);
+        BLE_SendResponse(response);
+    }
+    // Example: get system info
+    else if (strcmp(command, "info") == 0) {
+        snprintf(response, sizeof(response),
+                "FlightComputer v1.0\r\nBLE Module Active\r\nUptime: %lu ms\r\n",
+                HAL_GetTick());
+        BLE_SendResponse(response);
+    }
+    // Unknown command
+    else {
+        snprintf(response, sizeof(response), "Unknown command: %s\r\n", command);
+        BLE_SendResponse(response);
+    }
+}
 
 /* USER CODE END 0 */
 
@@ -112,6 +146,29 @@ int main(void)
   // Wait for USB CDC to be ready
   HAL_Delay(2000);
 
+  // ===== BLE MODULE TEST =====
+  // Initialize BLE module
+  if (BLE_Init()) {
+      ble_initialized = true;
+      Debug_Print("BLE Module initialized successfully\r\n");
+
+      // Register command callback for custom commands
+      BLE_RegisterCommandCallback(BLE_CommandCallback);
+      Debug_Print("BLE Command callback registered\r\n");
+
+      // Enable data transmission
+      BLE_SetDataTransmissionEnabled(true);
+      Debug_Print("BLE Data transmission enabled\r\n");
+
+      // Send welcome message
+      BLE_SendResponse("=== FlightComputer BLE Test ===\r\n");
+      BLE_SendResponse("Built-in commands: start, stop, status, help, erase\r\n");
+      BLE_SendResponse("Custom commands: test, info\r\n");
+      BLE_SendResponse("Ready!\r\n");
+  } else {
+      Debug_Print("ERROR: BLE Module initialization failed!\r\n");
+  }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -122,6 +179,46 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+    // ===== BLE MODULE TEST LOOP =====
+    if (ble_initialized) {
+        // CRITICAL: Call BLE_Update() every loop iteration
+        // This handles UART reception, command processing, and timeout
+        BLE_Update();
+
+        // Send test data every 1 second
+        uint32_t current_time = HAL_GetTick();
+        if (current_time - last_ble_send_time >= 1000) {
+            last_ble_send_time = current_time;
+            ble_test_counter++;
+
+            // Send test telemetry data (respects data transmission enable/disable)
+            char telemetry[128];
+            snprintf(telemetry, sizeof(telemetry),
+                    "Test Data #%lu | Time: %lu ms | Status: %s\r\n",
+                    ble_test_counter,
+                    current_time,
+                    BLE_IsConnected() ? "Connected" : "Disconnected");
+
+            BLE_SendData(telemetry, strlen(telemetry));
+
+            // Optional: Get and display BLE statistics
+            BLE_Statistics_t stats;
+            if (BLE_GetStatistics(&stats)) {
+                char stats_msg[128];
+                snprintf(stats_msg, sizeof(stats_msg),
+                        "Stats: RX=%lu TX=%lu Connections=%lu\r\n",
+                        stats.total_bytes_received,
+                        stats.total_bytes_sent,
+                        stats.connection_count);
+                Debug_Print(stats_msg);
+            }
+        }
+    }
+
+    // Small delay to prevent CPU saturation (optional)
+    HAL_Delay(1);
+
   }
   /* USER CODE END 3 */
 }
