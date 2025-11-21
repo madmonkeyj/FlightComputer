@@ -1,24 +1,37 @@
 /**
   ******************************************************************************
   * @file    ble_module.c
-  * @brief   BLE module with unified UART callback for GPS integration
+  * @brief   BLE module with DMA circular buffer (same pattern as GPS)
+  * @note    Converted from interrupt-based to DMA for consistency and efficiency
   ******************************************************************************
   */
 
 #include "ble_module.h"
-#include "gps_module.h"  // ADD THIS for GPS_UART_RxCallback
 #include "debug_utils.h"
 #include "usart.h"
 #include <string.h>
 #include <stdio.h>
 #include "data_logger.h"
 
+/* External DMA handle for USART1 RX (defined in usart.c) */
+extern DMA_HandleTypeDef hdma_usart1_rx;
+
 /* Private variables - fully encapsulated within module */
+#define BLE_RX_BUFFER_SIZE 512  /* Circular DMA buffer size */
+
+/* DMA circular buffer variables (same pattern as GPS) */
+static uint8_t ble_rx_dma_buffer[BLE_RX_BUFFER_SIZE];
+static uint16_t buffer_read_pos = 0;
+static volatile uint16_t last_dma_write_pos = 0;  /* Updated by DMA idle callback */
+static bool dma_active = false;
+
+/* Command processing buffer */
 static uint8_t rx_buffer[128];
 static uint16_t rx_index = 0;
+
+/* Status and statistics */
 static uint32_t last_rx_time = 0;
 static uint32_t last_tx_time = 0;
-static bool uart_rx_active = false;
 static uint32_t total_bytes_received = 0;
 static uint32_t total_bytes_sent = 0;
 static char uart_response_buffer[256];
@@ -40,15 +53,12 @@ static volatile bool command_received_flag = false;
 static char last_command_received[64] = {0};
 static volatile bool response_sent_flag = false;
 
-/* UART receive byte - now private to BLE module */
-static uint8_t rxByte = 0;
-
 /* Private function prototypes */
 static void ClearResponseBuffer(void);
 static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32_t timeout);
 static void ResetBleModule(void);
 static void BLE_ProcessReceivedByte(uint8_t byte);
-static void BLE_StartReception(void);
+static bool BLE_StartDMA(void);
 static void BLE_ProcessCommand(const char* command);
 static void BLE_ProcessIncompleteBuffer(void);
 static bool IsProtocolOverhead(const uint8_t* data, uint16_t length);
@@ -193,17 +203,18 @@ static bool EnterCommandMode(void) {
 }
 
 /**
- * @brief Initialize BLE module
+ * @brief Initialize BLE module with DMA
  */
 bool BLE_Init(void) {
-    DebugPrint("BLE: Initializing BLE module...\r\n");
+    DebugPrint("BLE: Initializing BLE module (DMA mode)...\r\n");
 
     /* Reset all private variables */
-    rxByte = 0;
+    buffer_read_pos = 0;
+    last_dma_write_pos = 0;
+    dma_active = false;
     rx_index = 0;
     last_rx_time = 0;
     last_tx_time = 0;
-    uart_rx_active = false;
     total_bytes_received = 0;
     total_bytes_sent = 0;
     uart_response_index = 0;
@@ -217,6 +228,7 @@ bool BLE_Init(void) {
     char_timeout_ms = 2000;  // 2 second timeout
 
     /* Clear buffers */
+    memset(ble_rx_dma_buffer, 0, sizeof(ble_rx_dma_buffer));
     memset(rx_buffer, 0, sizeof(rx_buffer));
     memset(uart_response_buffer, 0, sizeof(uart_response_buffer));
 
@@ -228,14 +240,19 @@ bool BLE_Init(void) {
         return false;
     }
 
-    /* Start UART reception */
-    BLE_StartReception();
+    /* Start DMA reception */
+    if (!BLE_StartDMA()) {
+        DebugPrint("BLE: ERROR - DMA start failed\r\n");
+        ble_status = BLE_STATUS_ERROR;
+        ble_initialized = false;
+        return false;
+    }
 
     ble_status = BLE_STATUS_DISCONNECTED; /* Ready but not connected */
     ble_initialized = true;
     last_rx_time = HAL_GetTick();
 
-    DebugPrint("BLE: Module initialized successfully\r\n");
+    DebugPrint("BLE: Module initialized successfully (DMA active)\r\n");
     char timeout_msg[50];
     snprintf(timeout_msg, sizeof(timeout_msg), "BLE: Command timeout set to %lums\r\n", char_timeout_ms);
     DebugPrint(timeout_msg);
@@ -294,15 +311,22 @@ bool BLE_SendResponse(const char* response) {
 }
 
 /**
- * @brief Update BLE module - SIMPLIFIED without grace period
+ * @brief Update BLE module - DMA version (same pattern as GPS)
  */
 void BLE_Update(void) {
-    if (!ble_initialized) {
+    if (!ble_initialized || !dma_active) {
         return;
     }
 
-    /* Ensure UART reception is active */
-    BLE_StartReception();
+    /* Get stable snapshot of DMA write position (updated by idle line callback) */
+    uint16_t current_write_pos = last_dma_write_pos;
+
+    /* Process all bytes from DMA circular buffer */
+    while (buffer_read_pos != current_write_pos) {
+        uint8_t byte = ble_rx_dma_buffer[buffer_read_pos];
+        BLE_ProcessReceivedByte(byte);
+        buffer_read_pos = (buffer_read_pos + 1) % BLE_RX_BUFFER_SIZE;
+    }
 
     /* Handle command timeout */
     if (rx_index > 0) {
@@ -765,91 +789,68 @@ static void BLE_ProcessReceivedByte(uint8_t byte) {
 }
 
 /**
- * @brief Start UART reception with enhanced error handling
+ * @brief Start DMA reception with circular buffer (same pattern as GPS)
  */
-static void BLE_StartReception(void) {
-    if (!uart_rx_active) {
-        // Clear any existing errors first
-        __HAL_UART_CLEAR_OREFLAG(&huart1);
-        __HAL_UART_CLEAR_NEFLAG(&huart1);
-        __HAL_UART_CLEAR_FEFLAG(&huart1);
-        __HAL_UART_CLEAR_PEFLAG(&huart1);
+static bool BLE_StartDMA(void) {
+    DebugPrint("BLE: Starting DMA circular buffer reception...\r\n");
 
-        // Try to start reception
-        HAL_StatusTypeDef status = HAL_UART_Receive_IT(&huart1, &rxByte, 1);
+    /* Clear any pending UART errors */
+    __HAL_UART_CLEAR_OREFLAG(&huart1);
+    __HAL_UART_CLEAR_NEFLAG(&huart1);
+    __HAL_UART_CLEAR_FEFLAG(&huart1);
+    __HAL_UART_CLEAR_PEFLAG(&huart1);
 
-        if (status == HAL_OK) {
-            uart_rx_active = true;
-        } else {
-            // If failed, wait and try once more
-            HAL_Delay(1);  // Brief delay
+    /* Abort any ongoing reception */
+    HAL_UART_AbortReceive(&huart1);
 
-            if (HAL_UART_Receive_IT(&huart1, &rxByte, 1) == HAL_OK) {
-                uart_rx_active = true;
-            } else {
-                // Still failing - log for debugging
-                static uint32_t last_error_log = 0;
-                if (HAL_GetTick() - last_error_log > 5000) {
-                    DebugPrint("BLE: UART reception start failed\r\n");
-                    last_error_log = HAL_GetTick();
-                }
-            }
-        }
+    /* Start DMA in circular mode with idle line detection */
+    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ble_rx_dma_buffer, BLE_RX_BUFFER_SIZE) != HAL_OK) {
+        dma_active = false;
+        DebugPrint("BLE: ❌ HAL_UARTEx_ReceiveToIdle_DMA failed\r\n");
+        return false;
     }
+
+    /* Disable half-transfer interrupt (we don't need it) */
+    __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+
+    dma_active = true;
+    DebugPrint("BLE: ✅ DMA circular buffer active\r\n");
+    return true;
 }
 
 /**
- * @brief UNIFIED UART RX callback - handles both BLE (UART1) and GPS (UART3)
+ * @brief UART RX Event callback - handles idle line detection for DMA
+ * @note Called when UART idle line is detected (message boundary)
+ * @note Both BLE (UART1) and GPS (UART3) use this for DMA circular buffer
  */
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) {
+    (void)Size;  /* Size parameter not used in circular mode */
+
     if (huart->Instance == USART1) {
-        // BLE UART handling
-        // Check for UART errors and handle them inline
-        if (huart->ErrorCode != HAL_UART_ERROR_NONE) {
-            // Clear error flags
-            __HAL_UART_CLEAR_OREFLAG(huart);
-            __HAL_UART_CLEAR_NEFLAG(huart);
-            __HAL_UART_CLEAR_FEFLAG(huart);
-            __HAL_UART_CLEAR_PEFLAG(huart);
-
-            // Reset error code
-            huart->ErrorCode = HAL_UART_ERROR_NONE;
-        } else {
-            // Process the byte only if no errors
-            BLE_ProcessReceivedByte(rxByte);
-        }
-
-        // Restart reception
-        uart_rx_active = false;
-        if (HAL_UART_Receive_IT(&huart1, &rxByte, 1) == HAL_OK) {
-            uart_rx_active = true;
-        } else {
-            // If restart fails, try again in main loop
-            uart_rx_active = false;
-        }
+        /* BLE: Update DMA write position on idle line detection */
+        last_dma_write_pos = BLE_RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
+        last_rx_time = HAL_GetTick();
     }
-    else if (huart->Instance == USART3) {
-        // GPS UART handling - delegate to GPS module
-        GPS_UART_RxCallback();
-    }
+    /* Note: GPS (USART3) idle line handling is in gps_module.c */
 }
 
-/* Legacy compatibility functions - simplified since callback is now internal */
+/* Legacy compatibility functions - deprecated with DMA implementation */
 
 /**
- * @brief Legacy byte handler - now just calls internal function
+ * @brief Legacy byte handler - DEPRECATED (DMA mode doesn't use byte-by-byte)
+ * @deprecated Use BLE_Update() in main loop instead
  */
 void HandleReceivedByte(uint8_t byte) {
-    BLE_ProcessReceivedByte(byte);
-    uart_rx_active = false;
-    BLE_StartReception();
+    (void)byte;
+    /* No-op: DMA mode processes bytes from circular buffer in BLE_Update() */
 }
 
 /**
- * @brief Legacy UART start - calls internal function
+ * @brief Legacy UART start - DEPRECATED (DMA auto-starts)
+ * @deprecated DMA starts automatically in BLE_Init()
  */
 void StartUartReception(void) {
-    BLE_StartReception();
+    /* No-op: DMA is started in BLE_Init() */
 }
 
 /**

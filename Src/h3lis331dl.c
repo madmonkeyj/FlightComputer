@@ -14,6 +14,13 @@
 static H3LIS331DL_FullScale_t current_full_scale = H3LIS331DL_FS_100G;
 static volatile uint32_t highg_dma_callback_count = 0;
 static uint8_t __attribute__((aligned(4))) highg_rx_buffer[8];
+
+/**
+ * @brief DMA busy flag for high-g accelerometer reads
+ * @note Volatile is sufficient for single-core Cortex-M4
+ * @note DMA callbacks run in interrupt context but don't preempt themselves
+ * @note Flag is set before DMA request and cleared in completion callback
+ */
 static volatile bool highg_dma_busy = false;
 
 /* Conversion factors (left-justified 12-bit format) */

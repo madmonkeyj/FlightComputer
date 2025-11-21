@@ -27,6 +27,7 @@
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
+DMA_HandleTypeDef hdma_usart1_rx;  /* BLE RX DMA */
 DMA_HandleTypeDef hdma_usart3_rx;
 DMA_HandleTypeDef hdma_usart3_tx;
 
@@ -203,6 +204,24 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
     HAL_NVIC_EnableIRQ(USART1_IRQn);
   /* USER CODE BEGIN USART1_MspInit 1 */
 
+    /* USART1 DMA Init - BLE module */
+    /* USART1_RX Init */
+    hdma_usart1_rx.Instance = DMA1_Channel1;
+    hdma_usart1_rx.Init.Request = DMA_REQUEST_USART1_RX;
+    hdma_usart1_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_usart1_rx.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_usart1_rx.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_usart1_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_usart1_rx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+    hdma_usart1_rx.Init.Mode = DMA_CIRCULAR;  /* Circular mode for continuous reception */
+    hdma_usart1_rx.Init.Priority = DMA_PRIORITY_HIGH;  /* High priority for BLE */
+    if (HAL_DMA_Init(&hdma_usart1_rx) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
+    __HAL_LINKDMA(uartHandle,hdmarx,hdma_usart1_rx);
+
   /* USER CODE END USART1_MspInit 1 */
   }
   else if(uartHandle->Instance==USART2)
@@ -336,6 +355,9 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef* uartHandle)
     /* USART1 interrupt Deinit */
     HAL_NVIC_DisableIRQ(USART1_IRQn);
   /* USER CODE BEGIN USART1_MspDeInit 1 */
+
+    /* USART1 DMA DeInit - BLE module */
+    HAL_DMA_DeInit(uartHandle->hdmarx);
 
   /* USER CODE END USART1_MspDeInit 1 */
   }

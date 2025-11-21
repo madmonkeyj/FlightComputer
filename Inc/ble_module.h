@@ -1,7 +1,9 @@
 /**
   ******************************************************************************
   * @file    ble_module.h
-  * @brief   BLE module with integrated command timeout - Self-Managing Header
+  * @brief   BLE module with DMA circular buffer - Self-Managing Header
+  * @note    Uses DMA with idle line detection (same pattern as GPS module)
+  * @note    Converted from interrupt-based to DMA for consistency and efficiency
   ******************************************************************************
   */
 
@@ -44,16 +46,18 @@ typedef void (*BLE_CommandCallback_t)(const char* command);
  */
 
 /**
- * @brief Initialize BLE module
+ * @brief Initialize BLE module with DMA circular buffer
  * @return true if initialization successful
- * @note Sets up 200ms command timeout automatically
+ * @note Sets up DMA with idle line detection (same pattern as GPS)
+ * @note Sets up 2s command timeout automatically
  */
 bool BLE_Init(void);
 
 /**
  * @brief Update BLE module - call regularly from main loop
- * @note NOW INCLUDES: UART reception, command processing, AND timeout handling
- * @note Automatically processes incomplete commands after 200ms timeout
+ * @note Processes data from DMA circular buffer
+ * @note Handles command processing and timeout
+ * @note Uses idle line detection for message boundaries
  * @note This is the ONLY function you need to call - everything else is automatic
  */
 void BLE_Update(void);
@@ -158,10 +162,10 @@ bool BLE_Configure_NoConfig(void);
  */
 bool BLE_GetLastCommand(char* command_buffer, size_t buffer_size);
 
-/* Legacy compatibility functions - for gradual migration only */
-/* These will be removed in future versions */
-void HandleReceivedByte(uint8_t byte);  /* @deprecated Use BLE_Update() instead */
-void StartUartReception(void);          /* @deprecated Use BLE_Update() instead */
+/* Legacy compatibility functions - DEPRECATED with DMA implementation */
+/* These are no-ops in DMA mode - kept for backward compatibility only */
+void HandleReceivedByte(uint8_t byte);  /* @deprecated No-op in DMA mode */
+void StartUartReception(void);          /* @deprecated No-op in DMA mode (auto-starts) */
 bool ConfigureModule(void);             /* @deprecated Use BLE_Configure() instead */
 
 #endif /* BLE_MODULE_H_ */
