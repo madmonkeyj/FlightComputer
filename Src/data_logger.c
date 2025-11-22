@@ -40,7 +40,7 @@ static uint32_t last_recording_attempt = 0;
 static DataRecord_t temp_record;
 
 /* External Mahony filter instance - defined in main.c or where Mahony is initialized */
-extern Mahony_Filter_t mahony_filter;
+extern MahonyFilter_t mahony_filter;
 
 /**
  * @brief Erase a range of flash memory by erasing all sectors in range
@@ -78,20 +78,24 @@ static void PackDataRecord(DataRecord_t* record) {
     record->timestamp_ms = HAL_GetTick();
 
     // === SENSOR DATA === Get from SensorManager
+    SensorManager_RawData_t raw_data;
     SensorManager_ScaledData_t sensor_data;
-    if (SensorManager_ReadScaled(&sensor_data)) {
-        // Accelerometer (m/s²)
-        if (sensor_data.imu_accel_valid) {
-            record->accel[0] = sensor_data.imu_accel_x;
-            record->accel[1] = sensor_data.imu_accel_y;
-            record->accel[2] = sensor_data.imu_accel_z;
+
+    if (SensorManager_ReadRaw(&raw_data) == HAL_OK) {
+        SensorManager_ConvertToScaled(&raw_data, &sensor_data);
+
+        // Accelerometer (convert from g to m/s²)
+        if (raw_data.imu_valid) {
+            record->accel[0] = sensor_data.accel_x_g * 9.80665f;
+            record->accel[1] = sensor_data.accel_y_g * 9.80665f;
+            record->accel[2] = sensor_data.accel_z_g * 9.80665f;
         }
 
-        // Gyroscope (rad/s)
-        if (sensor_data.imu_gyro_valid) {
-            record->gyro[0] = sensor_data.imu_gyro_x;
-            record->gyro[1] = sensor_data.imu_gyro_y;
-            record->gyro[2] = sensor_data.imu_gyro_z;
+        // Gyroscope (convert from dps to rad/s)
+        if (raw_data.imu_valid) {
+            record->gyro[0] = sensor_data.gyro_x_dps * 0.0174533f;
+            record->gyro[1] = sensor_data.gyro_y_dps * 0.0174533f;
+            record->gyro[2] = sensor_data.gyro_z_dps * 0.0174533f;
         }
     }
 
@@ -118,9 +122,13 @@ static void PackDataRecord(DataRecord_t* record) {
     }
 
     // === MAHONY ATTITUDE === Get quaternion from Mahony filter
-    Mahony_GetQuaternion(&mahony_filter,
-                         &record->quat[0], &record->quat[1],
-                         &record->quat[2], &record->quat[3]);
+    Quaternion_t quat;
+    if (Mahony_GetQuaternion(&mahony_filter, &quat) == HAL_OK) {
+        record->quat[0] = quat.q0;
+        record->quat[1] = quat.q1;
+        record->quat[2] = quat.q2;
+        record->quat[3] = quat.q3;
+    }
 
     // === NO EKF - Set position/velocity to zero ===
     // pos_ned[3] = {0, 0, 0}
@@ -345,11 +353,6 @@ bool DataLogger_GetStatusString(char* buffer, size_t buffer_size) {
                 stats.flash_ready ? "Ready" : "Error", stats.record_size);
     }
 
-    if (memcmp(&current_metadata, &verify_metadata, sizeof(FlashMetadata_t)) != 0) {
-        return false;
-    }
-
-    metadata_loaded = true;
     return true;
 }
 
@@ -485,37 +488,6 @@ bool Metadata_Save(void) {
 
     if (memcmp(&current_metadata, &verify_metadata, sizeof(FlashMetadata_t)) != 0) {
         return false;
-    }
-
-    metadata_loaded = true;
-    return true;
-}
-
-bool Metadata_Load(void) {
-    if (!flash_initialized) {
-        return false;
-    }
-
-    FlashMetadata_t loaded_metadata;
-    if (QSPI_Quad_Read((uint8_t*)&loaded_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
-        return false;
-    }
-
-    if (!Metadata_Validate(&loaded_metadata)) {
-        return false;
-    }
-
-    // Restore state
-    current_metadata = loaded_metadata;
-    records_written = current_metadata.records_written;
-    current_write_address = current_metadata.current_write_address;
-    recording_start_time = current_metadata.recording_start_time;
-    last_record_time = current_metadata.last_record_time;
-    logger_status = (LoggerStatus_t)current_metadata.logger_status;
-
-    // Don't resume recording after power cycle
-    if (logger_status == LOGGER_RECORDING) {
-        logger_status = LOGGER_IDLE;
     }
 
     metadata_loaded = true;
