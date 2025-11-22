@@ -56,7 +56,7 @@
 
 /* USER CODE BEGIN PV */
 /* Mahony Filter - Global instance for data_logger access */
-Mahony_Filter_t mahony_filter;
+MahonyFilter_t mahony_filter;
 
 /* BLE Test Variables */
 static uint32_t ble_test_counter = 0;
