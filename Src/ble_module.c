@@ -367,21 +367,13 @@ void BLE_Update(void) {
                 rx_index, HAL_GetTick() - last_rx_time);
         DebugPrint(debug_msg);
 
-        // Check if DMA is still active - restart if crashed
+        // Check DMA state for diagnostics (should stay BUSY_RX with auto-restart in callback)
         if (huart1.RxState == HAL_UART_STATE_BUSY_RX) {
-            DebugPrint("BLE: DMA UART state = BUSY_RX (good)\r\n");
+            DebugPrint("BLE: DMA state = BUSY_RX (good)\r\n");
         } else {
             char state_msg[80];
-            snprintf(state_msg, sizeof(state_msg), "BLE: WARNING - UART RxState=%d (crashed!) - Restarting DMA...\r\n", huart1.RxState);
+            snprintf(state_msg, sizeof(state_msg), "BLE: WARNING - DMA state=%d (idle callback should auto-restart!)\r\n", huart1.RxState);
             DebugPrint(state_msg);
-
-            // Restart DMA reception
-            if (BLE_StartDMA()) {
-                DebugPrint("BLE: DMA restarted successfully\r\n");
-            } else {
-                DebugPrint("BLE: ERROR - Failed to restart DMA\r\n");
-                dma_active = false;
-            }
         }
     }
 
@@ -943,11 +935,45 @@ static bool BLE_StartDMA(void) {
 /**
  * @brief BLE UART RX Event handler - called from unified callback in gps_module.c
  * @note This is called when UART idle line is detected (message boundary)
+ * @note CRITICAL: HAL_UARTEx_ReceiveToIdle_DMA is NOT circular - it STOPS on idle!
+ *       We must immediately restart it here to maintain continuous reception
  */
 void BLE_UART_RxEventCallback(void) {
-    /* BLE: Update DMA write position on idle line detection */
+    /* Update DMA write position on idle line detection */
     last_dma_write_pos = BLE_RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
     last_rx_time = HAL_GetTick();
+
+    /* CRITICAL: Restart DMA immediately - ReceiveToIdle_DMA stops after idle! */
+    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ble_rx_dma_buffer, BLE_RX_BUFFER_SIZE) != HAL_OK) {
+        DebugPrint("BLE: ERROR - Failed to restart DMA in idle callback!\r\n");
+        dma_active = false;
+    } else {
+        /* Disable half-transfer interrupt (we don't need it) */
+        __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+    }
+}
+
+/**
+ * @brief UART RX Complete Callback - handles DMA completion (timeout/buffer full)
+ * @note Called when ReceiveToIdle_DMA completes due to timeout or buffer full
+ * @note This is the "no data" case - restart DMA to keep receiving
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART1) {
+        /* BLE: DMA completed (timeout or buffer full) - restart immediately */
+        DebugPrint("BLE: DMA completed (timeout) - auto-restarting...\r\n");
+
+        /* Update write position before restart */
+        last_dma_write_pos = BLE_RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
+
+        /* Restart DMA */
+        if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ble_rx_dma_buffer, BLE_RX_BUFFER_SIZE) != HAL_OK) {
+            DebugPrint("BLE: ERROR - Failed to restart DMA in completion callback!\r\n");
+            dma_active = false;
+        } else {
+            __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+        }
+    }
 }
 
 /* Legacy compatibility functions - deprecated with DMA implementation */
