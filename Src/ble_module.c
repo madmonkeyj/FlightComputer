@@ -625,33 +625,27 @@ bool BLE_Configure(void) {
         failed_commands++;
     }
 
-    /* NOTE: Custom characteristics and stream mode are NOT needed for transparent UART mode
-     * The module works perfectly without them for telemetry and command handling.
-     * These were causing "Err" responses and are commented out. */
+    /* IMPORTANT: Transparent UART requires BOTH TX and RX characteristics configured!
+     * Without these, only TX (device->phone) works, RX (phone->device) is broken.
+     */
 
-    // Configure primary characteristic (for notifications/indications)
-    // NOT NEEDED: Module uses transparent UART mode by default
-    // DebugPrint("BLE: Setting primary characteristic...\r\n");
-    // if (!SendBleCommand("PC,49535343-1E4D-4BD9-BA61-23C647249616,1A,20\r", "AOK", 2000)) {
-    //     DebugPrint("BLE: WARNING - Primary characteristic failed\r\n");
-    //     failed_commands++;
-    // }
+    // Configure TX characteristic (device sends data to phone via notifications)
+    // UUID: 49535343-1E4D-4BD9-BA61-23C647249616 (Microchip Transparent UART TX)
+    // Properties: 0x10 = Notify
+    DebugPrint("BLE: Setting TX characteristic (device->phone)...\r\n");
+    if (!SendBleCommand("PC,49535343-1E4D-4BD9-BA61-23C647249616,10\r", "AOK", 2000)) {
+        DebugPrint("BLE: WARNING - TX characteristic failed\r\n");
+        failed_commands++;
+    }
 
-    // Configure write characteristic (for receiving commands)
-    // NOT NEEDED: Transparent UART handles this automatically
-    // DebugPrint("BLE: Setting write characteristic...\r\n");
-    // if (!SendBleCommand("PC,49535343-8841-43F4-A8D4-ECBE34729BB3,0C,20\r", "AOK", 2000)) {
-    //     DebugPrint("BLE: WARNING - Write characteristic failed\r\n");
-    //     failed_commands++;
-    // }
-
-    // Configure stream mode
-    // NOT NEEDED: Default streaming works fine for telemetry
-    // DebugPrint("BLE: Setting stream mode...\r\n");
-    // if (!SendBleCommand("S|,0\r", "AOK", 2000)) {
-    //     DebugPrint("BLE: WARNING - Stream mode setting failed\r\n");
-    //     failed_commands++;
-    // }
+    // Configure RX characteristic (phone sends commands to device via write)
+    // UUID: 49535343-8841-43F4-A8D4-ECBE34729BB3 (Microchip Transparent UART RX)
+    // Properties: 0x0C = Write without response (0x04) + Write (0x08)
+    DebugPrint("BLE: Setting RX characteristic (phone->device)...\r\n");
+    if (!SendBleCommand("PC,49535343-8841-43F4-A8D4-ECBE34729BB3,0C\r", "AOK", 2000)) {
+        DebugPrint("BLE: WARNING - RX characteristic failed\r\n");
+        failed_commands++;
+    }
 
     // Configure output mode
     DebugPrint("BLE: Setting output mode...\r\n");
