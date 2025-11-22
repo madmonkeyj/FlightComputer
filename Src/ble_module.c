@@ -598,26 +598,33 @@ bool BLE_Configure(void) {
         failed_commands++;
     }
 
+    /* NOTE: Custom characteristics and stream mode are NOT needed for transparent UART mode
+     * The module works perfectly without them for telemetry and command handling.
+     * These were causing "Err" responses and are commented out. */
+
     // Configure primary characteristic (for notifications/indications)
-    DebugPrint("BLE: Setting primary characteristic...\r\n");
-    if (!SendBleCommand("PC,49535343-1E4D-4BD9-BA61-23C647249616,1A,20\r", "AOK", 2000)) {
-        DebugPrint("BLE: WARNING - Primary characteristic failed\r\n");
-        failed_commands++;
-    }
+    // NOT NEEDED: Module uses transparent UART mode by default
+    // DebugPrint("BLE: Setting primary characteristic...\r\n");
+    // if (!SendBleCommand("PC,49535343-1E4D-4BD9-BA61-23C647249616,1A,20\r", "AOK", 2000)) {
+    //     DebugPrint("BLE: WARNING - Primary characteristic failed\r\n");
+    //     failed_commands++;
+    // }
 
     // Configure write characteristic (for receiving commands)
-    DebugPrint("BLE: Setting write characteristic...\r\n");
-    if (!SendBleCommand("PC,49535343-8841-43F4-A8D4-ECBE34729BB3,0C,20\r", "AOK", 2000)) {
-        DebugPrint("BLE: WARNING - Write characteristic failed\r\n");
-        failed_commands++;
-    }
+    // NOT NEEDED: Transparent UART handles this automatically
+    // DebugPrint("BLE: Setting write characteristic...\r\n");
+    // if (!SendBleCommand("PC,49535343-8841-43F4-A8D4-ECBE34729BB3,0C,20\r", "AOK", 2000)) {
+    //     DebugPrint("BLE: WARNING - Write characteristic failed\r\n");
+    //     failed_commands++;
+    // }
 
     // Configure stream mode
-    DebugPrint("BLE: Setting stream mode...\r\n");
-    if (!SendBleCommand("S|,0\r", "AOK", 2000)) {
-        DebugPrint("BLE: WARNING - Stream mode setting failed\r\n");
-        failed_commands++;
-    }
+    // NOT NEEDED: Default streaming works fine for telemetry
+    // DebugPrint("BLE: Setting stream mode...\r\n");
+    // if (!SendBleCommand("S|,0\r", "AOK", 2000)) {
+    //     DebugPrint("BLE: WARNING - Stream mode setting failed\r\n");
+    //     failed_commands++;
+    // }
 
     // Configure output mode
     DebugPrint("BLE: Setting output mode...\r\n");
