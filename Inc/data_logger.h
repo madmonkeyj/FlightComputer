@@ -1,9 +1,7 @@
 /**
   ******************************************************************************
   * @file    data_logger.h
-  * @brief   Data logging module header - 192-BYTE STRUCTURE
-  * @note    Adapted for current FlightComputer codebase (no EKF)
-  * @note    Uses SensorManager, Mahony filter, and GPS module
+  * @brief   Data logging module header - OPTIMIZED 192-BYTE STRUCTURE
   ******************************************************************************
   */
 
@@ -11,6 +9,8 @@
 #define DATA_LOGGER_H_
 
 #include "main.h"
+#include "navigation_manager.h"
+#include "sensor_system.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -137,7 +137,7 @@ typedef struct {
 bool DataLogger_Init(void);
 bool DataLogger_StartRecording(void);
 bool DataLogger_StopRecording(void);
-bool DataLogger_RecordData(void);  // Reads from SensorManager, Mahony, GPS directly
+bool DataLogger_RecordData(const NavigationSolution_t* nav_solution, const SensorData_t* sensor_data);
 void DataLogger_Update(void);
 
 // Status and control
