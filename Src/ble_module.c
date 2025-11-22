@@ -694,7 +694,8 @@ static void ClearResponseBuffer(void) {
 }
 
 /**
- * @brief Enhanced command sending with better timeout handling and diagnostics
+ * @brief Enhanced command sending using DMA circular buffer (non-blocking)
+ * @note This version reads from DMA buffer instead of blocking UART receive
  */
 static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32_t timeout) {
     char debugMsg[300];
@@ -705,7 +706,7 @@ static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32
     snprintf(debugMsg, sizeof(debugMsg), "BLE: Sending '%s' (%d bytes)\r\n", cmd, strlen(cmd));
     DebugPrint(debugMsg);
 
-    // Send command with error checking
+    // Send command with error checking (TX can still be blocking - doesn't conflict with RX DMA)
     HAL_StatusTypeDef tx_status = HAL_UART_Transmit(&huart1, (uint8_t*)cmd, strlen(cmd), 1000);
     if (tx_status != HAL_OK) {
         snprintf(debugMsg, sizeof(debugMsg), "BLE: ERROR - UART transmit failed (status=%d)\r\n", tx_status);
@@ -714,16 +715,23 @@ static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32
     }
     total_bytes_sent += strlen(cmd);
 
-    // Wait for response
+    // Wait for response by reading from DMA circular buffer
     uint32_t startTime = HAL_GetTick();
     bool responseFound = false;
     int bytes_received = 0;
 
-    while ((HAL_GetTick() - startTime) < timeout && !responseFound) {
-        uint8_t tempByte;
-        HAL_StatusTypeDef rx_status = HAL_UART_Receive(&huart1, &tempByte, 1, 1);
+    // Save current buffer position to restore if needed
+    uint16_t saved_read_pos = buffer_read_pos;
 
-        if (rx_status == HAL_OK) {
+    while ((HAL_GetTick() - startTime) < timeout && !responseFound) {
+        // Get current DMA write position (volatile, updated by ISR)
+        uint16_t current_write_pos = last_dma_write_pos;
+
+        // Read all available bytes from DMA circular buffer
+        while (buffer_read_pos != current_write_pos) {
+            uint8_t tempByte = ble_rx_dma_buffer[buffer_read_pos];
+            buffer_read_pos = (buffer_read_pos + 1) % BLE_RX_BUFFER_SIZE;
+
             bytes_received++;
             if (uart_response_index < sizeof(uart_response_buffer) - 1) {
                 uart_response_buffer[uart_response_index++] = tempByte;
@@ -733,13 +741,20 @@ static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32
             // Check for expected response
             if (expectedResponse == NULL) {
                 responseFound = true;
+                break;
             } else if (strstr(uart_response_buffer, expectedResponse) != NULL) {
                 responseFound = true;
+                break;
             } else if (strstr(uart_response_buffer, "ERR") != NULL) {
                 snprintf(debugMsg, sizeof(debugMsg), "BLE: Got error response: %s\r\n", uart_response_buffer);
                 DebugPrint(debugMsg);
                 return false;
             }
+        }
+
+        // Small delay to avoid busy-waiting
+        if (!responseFound) {
+            HAL_Delay(1);
         }
     }
 
