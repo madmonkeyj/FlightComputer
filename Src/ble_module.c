@@ -760,25 +760,23 @@ static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32
 static void ResetBleModule(void) {
     DebugPrint("BLE: Hardware resetting BLE module...\r\n");
 
-    /* CRITICAL: Set CONFIG pin HIGH before reset for normal UART mode */
-    /* CONFIG pin LOW = configuration mode, HIGH = normal operation */
-    HAL_GPIO_WritePin(CONFIG_GPIO_Port, CONFIG_Pin, GPIO_PIN_SET);
-    DebugPrint("BLE: CONFIG pin set HIGH (normal UART mode)\r\n");
+    /* RN4871 pin mapping: CONFIG=P2_0, LPM=P1_6, RST_BT=RST_N */
 
-    /* Set LPM pin HIGH for active operation (not low power mode) */
+    /* Set CONFIG (P2_0) and LPM (P1_6) HIGH for normal active operation */
+    /* Evidence: With these HIGH, module successfully responded with 'CMD>' */
+    HAL_GPIO_WritePin(CONFIG_GPIO_Port, CONFIG_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(LPM_GPIO_Port, LPM_Pin, GPIO_PIN_SET);
-    DebugPrint("BLE: LPM pin set HIGH (active mode)\r\n");
+    DebugPrint("BLE: CONFIG (P2_0) and LPM (P1_6) set HIGH for active mode\r\n");
 
     HAL_Delay(10); // Brief delay for pins to stabilize
 
-    /* Hardware reset sequence */
+    /* Hardware reset sequence - RST_N is active LOW */
     HAL_GPIO_WritePin(RST_BT_GPIO_Port, RST_BT_Pin, GPIO_PIN_RESET);
-    HAL_Delay(500);  // Hold in reset for 500ms
+    HAL_Delay(100);  // Hold in reset for 100ms
 
     HAL_GPIO_WritePin(RST_BT_GPIO_Port, RST_BT_Pin, GPIO_PIN_SET);
-    HAL_Delay(5000); // Wait 5s for module to boot (datasheet says ~22ms typical)
-
-    DebugPrint("BLE: Module reset complete\r\n");
+    DebugPrint("BLE: Module reset complete, waiting for boot...\r\n");
+    HAL_Delay(500);  // Wait for module to boot
 
     // Clear any pending UART data
     uint8_t dummy;
