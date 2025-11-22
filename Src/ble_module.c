@@ -233,7 +233,7 @@ bool BLE_Init(void) {
     memset(uart_response_buffer, 0, sizeof(uart_response_buffer));
 
     /* Configure the BLE module */
-    if (!BLE_Configure_NoConfig()) {
+    if (!BLE_Configure()) {
         DebugPrint("BLE: ERROR - Configuration failed\r\n");
         ble_status = BLE_STATUS_ERROR;
         ble_initialized = false;
