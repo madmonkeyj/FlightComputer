@@ -350,6 +350,18 @@ void BLE_Update(void) {
     /* Get stable snapshot of DMA write position (updated by idle line callback) */
     uint16_t current_write_pos = last_dma_write_pos;
 
+    /* DEBUG: Periodically show buffer status */
+    static uint32_t last_debug_time = 0;
+    if (HAL_GetTick() - last_debug_time > 5000) {  // Every 5 seconds
+        last_debug_time = HAL_GetTick();
+        char debug_msg[100];
+        snprintf(debug_msg, sizeof(debug_msg),
+                "BLE: Buffer R=%u W=%u RxIdx=%u LastRx=%lums ago\r\n",
+                buffer_read_pos, current_write_pos, rx_index,
+                HAL_GetTick() - last_rx_time);
+        DebugPrint(debug_msg);
+    }
+
     /* Process all bytes from DMA circular buffer */
     while (buffer_read_pos != current_write_pos) {
         uint8_t byte = ble_rx_dma_buffer[buffer_read_pos];
@@ -863,6 +875,15 @@ static void BLE_ProcessReceivedByte(uint8_t byte) {
     last_rx_time = current_time;
     last_char_time = current_time;
     total_bytes_received++;
+
+    /* DEBUG: Show received character */
+    char byte_msg[50];
+    if (byte >= 32 && byte <= 126) {  // Printable
+        snprintf(byte_msg, sizeof(byte_msg), "BLE RX: '%c' (0x%02X) idx=%u\r\n", byte, byte, rx_index-1);
+    } else {
+        snprintf(byte_msg, sizeof(byte_msg), "BLE RX: 0x%02X idx=%u\r\n", byte, rx_index-1);
+    }
+    DebugPrint(byte_msg);
 
     /* Process complete messages immediately if properly terminated */
     if (byte == '\n') {  // Only process on newline
