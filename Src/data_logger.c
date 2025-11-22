@@ -1,7 +1,9 @@
 /**
   ******************************************************************************
   * @file    data_logger.c
-  * @brief   Data logging module - OPTIMIZED 192-BYTE STRUCTURE
+  * @brief   Data logging module - 192-BYTE STRUCTURE
+  * @note    Adapted for current FlightComputer codebase (no EKF)
+  * @note    Uses SensorManager, Mahony filter, and GPS module
   ******************************************************************************
   */
 
@@ -9,7 +11,8 @@
 #include "quadspi.h"
 #include "ble_module.h"
 #include "gps_module.h"
-#include "battery_monitor.h"
+#include "sensor_manager.h"
+#include "mahony_filter.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -36,11 +39,35 @@ static uint32_t last_recording_attempt = 0;
 /* Temporary record buffer */
 static DataRecord_t temp_record;
 
+/* External Mahony filter instance - defined in main.c or where Mahony is initialized */
+extern Mahony_Filter_t mahony_filter;
+
 /**
- * @brief Pack data into optimized record structure with EKF debugging data
+ * @brief Erase a range of flash memory by erasing all sectors in range
+ * @param start_addr: Start address (will be aligned to 4KB)
+ * @param end_addr: End address
+ * @return HAL_OK on success, HAL_ERROR on failure
  */
-static void PackDataRecord(DataRecord_t* record, const NavigationSolution_t* nav_solution, const SensorData_t* sensor_data) {
-    if (!record || !nav_solution || !sensor_data) {
+static HAL_StatusTypeDef EraseFlashRange(uint32_t start_addr, uint32_t end_addr) {
+    // Align start to sector boundary
+    uint32_t sector_start = (start_addr / SECTOR_SIZE) * SECTOR_SIZE;
+    uint32_t sector_end = ((end_addr + SECTOR_SIZE - 1) / SECTOR_SIZE) * SECTOR_SIZE;
+
+    for (uint32_t addr = sector_start; addr < sector_end; addr += SECTOR_SIZE) {
+        if (QSPI_Simple_Erase(addr) != HAL_OK) {
+            return HAL_ERROR;
+        }
+    }
+    return HAL_OK;
+}
+
+/**
+ * @brief Pack data into 192-byte record structure (adapted for current system)
+ * @note Uses SensorManager, Mahony filter, and GPS module
+ * @note EKF fields are set to zero/NaN (no EKF in current system)
+ */
+static void PackDataRecord(DataRecord_t* record) {
+    if (!record) {
         return;
     }
 
@@ -50,17 +77,22 @@ static void PackDataRecord(DataRecord_t* record, const NavigationSolution_t* nav
     // === HEADER ===
     record->timestamp_ms = HAL_GetTick();
 
-    // === CRITICAL SENSOR DATA === (reduced from raw sensor data)
-    if (sensor_data->accel_valid) {
-        record->accel[0] = sensor_data->accel[0];
-        record->accel[1] = sensor_data->accel[1];
-        record->accel[2] = sensor_data->accel[2];
-    }
+    // === SENSOR DATA === Get from SensorManager
+    SensorManager_ScaledData_t sensor_data;
+    if (SensorManager_ReadScaled(&sensor_data)) {
+        // Accelerometer (m/s²)
+        if (sensor_data.imu_accel_valid) {
+            record->accel[0] = sensor_data.imu_accel_x;
+            record->accel[1] = sensor_data.imu_accel_y;
+            record->accel[2] = sensor_data.imu_accel_z;
+        }
 
-    if (sensor_data->gyro_valid) {
-        record->gyro[0] = sensor_data->gyro[0];
-        record->gyro[1] = sensor_data->gyro[1];
-        record->gyro[2] = sensor_data->gyro[2];
+        // Gyroscope (rad/s)
+        if (sensor_data.imu_gyro_valid) {
+            record->gyro[0] = sensor_data.imu_gyro_x;
+            record->gyro[1] = sensor_data.imu_gyro_y;
+            record->gyro[2] = sensor_data.imu_gyro_z;
+        }
     }
 
     // === GPS DATA ===
@@ -76,105 +108,46 @@ static void PackDataRecord(DataRecord_t* record, const NavigationSolution_t* nav
         record->gps_fix_status = gps_data.fix_status;
         record->gps_hdop = gps_data.hdop;
 
-        // Enhanced: Include all velocity components for complete debugging
+        // GPS velocity components (NED frame)
         record->gps_vel_n = gps_data.velN;
         record->gps_vel_e = gps_data.velE;
         record->gps_vel_d = gps_data.velD;
     } else {
-        record->gps_fix_status = 'V';
+        record->gps_fix_status = 'V';  // Invalid
         record->gps_hdop = 99.9f;
     }
 
-    // === NAVIGATION DATA ===
-    record->quat[0] = nav_solution->attitude.q0;
-    record->quat[1] = nav_solution->attitude.q1;
-    record->quat[2] = nav_solution->attitude.q2;
-    record->quat[3] = nav_solution->attitude.q3;
+    // === MAHONY ATTITUDE === Get quaternion from Mahony filter
+    Mahony_GetQuaternion(&mahony_filter,
+                         &record->quat[0], &record->quat[1],
+                         &record->quat[2], &record->quat[3]);
 
-    memcpy(record->pos_ned, nav_solution->position_ned, sizeof(record->pos_ned));
-    memcpy(record->vel_ned, nav_solution->velocity_ned, sizeof(record->vel_ned));
+    // === NO EKF - Set position/velocity to zero ===
+    // pos_ned[3] = {0, 0, 0}
+    // vel_ned[3] = {0, 0, 0}
+    // Already zeroed by memset
 
     // === SYSTEM HEALTH ===
-    record->nav_valid = nav_solution->navigation_valid ? 1 : 0;
+    // Use GPS validity as navigation health indicator
+    record->nav_valid = gps_valid ? 1 : 0;
 
-    // === EKF UNCERTAINTY ESTIMATES ===
-    NavigationEKF_t* ekf = NavigationManager_GetEKF();
-    if (ekf && nav_solution->navigation_valid) {
-        record->pos_uncertainty[0] = sqrtf(ekf->P[0][0]);
-        record->pos_uncertainty[1] = sqrtf(ekf->P[1][1]);
-        record->pos_uncertainty[2] = sqrtf(ekf->P[2][2]);
-        record->vel_uncertainty[0] = sqrtf(ekf->P[3][3]);
-        record->vel_uncertainty[1] = sqrtf(ekf->P[4][4]);
-        record->vel_uncertainty[2] = sqrtf(ekf->P[5][5]);
-
-        // === **FIXED: INNOVATION VALUES** ===
-        if (ekf->debug.innovation_pos_valid) {
-            memcpy(record->innovation_pos, ekf->debug.innovation_pos, sizeof(record->innovation_pos));
-        } else {
-            for (int i = 0; i < 3; i++) record->innovation_pos[i] = NAN;
-        }
-
-        if (ekf->debug.innovation_vel_valid) {
-            memcpy(record->innovation_vel, ekf->debug.innovation_vel, sizeof(record->innovation_vel));
-        } else {
-            for (int i = 0; i < 3; i++) record->innovation_vel[i] = NAN;
-        }
-
-        // === **FIXED: KALMAN GAINS** ===
-        if (ekf->debug.kalman_gain_pos_valid) {
-            memcpy(record->kalman_gain_pos, ekf->debug.kalman_gain_pos, sizeof(record->kalman_gain_pos));
-        } else {
-            for (int i = 0; i < 3; i++) record->kalman_gain_pos[i] = NAN;
-        }
-
-        if (ekf->debug.kalman_gain_vel_valid) {
-            memcpy(record->kalman_gain_vel, ekf->debug.kalman_gain_vel, sizeof(record->kalman_gain_vel));
-        } else {
-            for (int i = 0; i < 3; i++) record->kalman_gain_vel[i] = NAN;
-        }
-
-        // === **FIXED: COORDINATE TRANSFORM RESULTS** ===
-        if (ekf->debug.accel_ned_valid) {
-            memcpy(record->accel_ned, ekf->debug.accel_ned, sizeof(record->accel_ned));
-        } else {
-            for (int i = 0; i < 3; i++) record->accel_ned[i] = NAN;
-        }
-
-        // === **NEW: MEASUREMENT UPDATE FLAGS** ===
-        record->gps_pos_rejected = ekf->debug.gps_pos_rejected;
-        record->gps_vel_rejected = ekf->debug.gps_vel_rejected;
-        record->zupt_applied = ekf->debug.zupt_applied;
-
-        // === REDUCED MOTION DETECTION ===
-        record->motion_state = (uint8_t)ekf->motion.current_state;
-        record->gps_velocity_suspect = (gps_valid && record->motion_state == 0 && gps_data.speed > 2.0f) ? 1 : 0;
-
-        // Clear debug flags for next cycle
-        ekf->debug.innovation_pos_valid = false;
-        ekf->debug.innovation_vel_valid = false;
-        ekf->debug.kalman_gain_pos_valid = false;
-        ekf->debug.kalman_gain_vel_valid = false;
-        ekf->debug.gps_pos_rejected = 0;
-        ekf->debug.gps_vel_rejected = 0;
-        ekf->debug.zupt_applied = 0;
-
-    } else {
-        // No EKF data - set defaults
-        for (int i = 0; i < 3; i++) {
-            record->pos_uncertainty[i] = 999.9f;
-            record->vel_uncertainty[i] = 999.9f;
-            record->innovation_pos[i] = NAN;
-            record->innovation_vel[i] = NAN;
-            record->kalman_gain_pos[i] = NAN;
-            record->kalman_gain_vel[i] = NAN;
-            record->accel_ned[i] = NAN;
-        }
-        record->motion_state = 3; // UNKNOWN
-        record->gps_velocity_suspect = 0;
-        record->gps_pos_rejected = 0;
-        record->gps_vel_rejected = 0;
-        record->zupt_applied = 0;
+    // === EKF FIELDS - Not available, set to NaN or zero ===
+    // These maintain 192-byte structure for downloader compatibility
+    for (int i = 0; i < 3; i++) {
+        record->pos_uncertainty[i] = NAN;
+        record->vel_uncertainty[i] = NAN;
+        record->innovation_pos[i] = NAN;
+        record->innovation_vel[i] = NAN;
+        record->kalman_gain_pos[i] = NAN;
+        record->kalman_gain_vel[i] = NAN;
+        record->accel_ned[i] = NAN;
     }
+
+    record->gps_pos_rejected = 0;
+    record->gps_vel_rejected = 0;
+    record->zupt_applied = 0;
+    record->motion_state = 3;  // UNKNOWN
+    record->gps_velocity_suspect = 0;
 }
 
 /**
@@ -185,10 +158,7 @@ bool DataLogger_Init(void) {
     uint8_t flash_id[3] = {0};
 
     if (QSPI_Read_ID(flash_id) != HAL_OK) {
-        if (QSPI_Reset_After_Error() != HAL_OK) {
-            logger_status = LOGGER_ERROR;
-            return false;
-        }
+        // Retry after delay (no reset function available)
         HAL_Delay(100);
         if (QSPI_Read_ID(flash_id) != HAL_OK) {
             logger_status = LOGGER_ERROR;
@@ -252,14 +222,11 @@ bool DataLogger_StopRecording(void) {
 }
 
 /**
- * @brief Record data
+ * @brief Record current sensor/GPS/attitude data to flash
+ * @note Reads data from SensorManager, Mahony filter, and GPS module
  */
-bool DataLogger_RecordData(const NavigationSolution_t* nav_solution, const SensorData_t* sensor_data) {
+bool DataLogger_RecordData(void) {
     if (logger_status != LOGGER_RECORDING || !flash_initialized) {
-        return false;
-    }
-
-    if (!nav_solution || !sensor_data) {
         return false;
     }
 
@@ -277,16 +244,16 @@ bool DataLogger_RecordData(const NavigationSolution_t* nav_solution, const Senso
         return false;
     }
 
-    // Pack data into record
-    PackDataRecord(&temp_record, nav_solution, sensor_data);
+    // Pack data into record (reads from current system state)
+    PackDataRecord(&temp_record);
 
     // Critical validation - timestamp must be valid
     if (temp_record.timestamp_ms == 0) {
         return false;
     }
 
-    // Write to flash
-    HAL_StatusTypeDef write_result = CSP_QSPI_WriteMemory((uint8_t*)&temp_record, current_write_address, sizeof(DataRecord_t));
+    // Write to flash using DMA for efficiency
+    HAL_StatusTypeDef write_result = QSPI_Quad_Write_DMA((uint8_t*)&temp_record, current_write_address, sizeof(DataRecord_t));
 
     if (write_result != HAL_OK) {
         logger_status = LOGGER_ERROR;
@@ -443,8 +410,8 @@ bool DataLogger_EraseAll(void) {
         return false;
     }
 
-    // Erase data area only
-    if (CSP_QSPI_EraseSector(0, DATA_AREA_SIZE - 1) != HAL_OK) {
+    // Erase data area only (this will take time - ~10-30 seconds for 4MB)
+    if (EraseFlashRange(0, DATA_AREA_SIZE - 1) != HAL_OK) {
         return false;
     }
 
@@ -501,17 +468,18 @@ bool Metadata_Save(void) {
     current_metadata.checksum = Metadata_CalculateChecksum(&current_metadata);
 
     // Erase and write metadata
-    if (CSP_QSPI_EraseSector(METADATA_SECTOR_ADDR, METADATA_SECTOR_ADDR + METADATA_SECTOR_SIZE - 1) != HAL_OK) {
+    if (QSPI_Simple_Erase(METADATA_SECTOR_ADDR) != HAL_OK) {
         return false;
     }
 
-    if (CSP_QSPI_WriteMemory((uint8_t*)&current_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
+    // Write metadata (small, can use blocking write or DMA - using DMA for consistency)
+    if (QSPI_Quad_Write_DMA((uint8_t*)&current_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
         return false;
     }
 
     // Verify
     FlashMetadata_t verify_metadata;
-    if (CSP_QSPI_Read((uint8_t*)&verify_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
+    if (QSPI_Quad_Read((uint8_t*)&verify_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
         return false;
     }
 
@@ -529,7 +497,7 @@ bool Metadata_Load(void) {
     }
 
     FlashMetadata_t loaded_metadata;
-    if (CSP_QSPI_Read((uint8_t*)&loaded_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
+    if (QSPI_Quad_Read((uint8_t*)&loaded_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
         return false;
     }
 
