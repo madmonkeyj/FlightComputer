@@ -354,12 +354,27 @@ void BLE_Update(void) {
     static uint32_t last_debug_time = 0;
     if (HAL_GetTick() - last_debug_time > 5000) {  // Every 5 seconds
         last_debug_time = HAL_GetTick();
-        char debug_msg[100];
+
+        // Check DMA counter directly to see if data is arriving
+        extern DMA_HandleTypeDef hdma_usart1_rx;
+        uint16_t dma_counter = __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
+        uint16_t direct_write_pos = BLE_RX_BUFFER_SIZE - dma_counter;
+
+        char debug_msg[150];
         snprintf(debug_msg, sizeof(debug_msg),
-                "BLE: Buffer R=%u W=%u RxIdx=%u LastRx=%lums ago\r\n",
-                buffer_read_pos, current_write_pos, rx_index,
-                HAL_GetTick() - last_rx_time);
+                "BLE: R=%u W=%u DirectW=%u DmaCnt=%u RxIdx=%u LastRx=%lums\r\n",
+                buffer_read_pos, current_write_pos, direct_write_pos, dma_counter,
+                rx_index, HAL_GetTick() - last_rx_time);
         DebugPrint(debug_msg);
+
+        // Check if DMA is still active
+        if (huart1.RxState == HAL_UART_STATE_BUSY_RX) {
+            DebugPrint("BLE: DMA UART state = BUSY_RX (good)\r\n");
+        } else {
+            char state_msg[60];
+            snprintf(state_msg, sizeof(state_msg), "BLE: WARNING - UART RxState=%d (should be busy!)\r\n", huart1.RxState);
+            DebugPrint(state_msg);
+        }
     }
 
     /* Process all bytes from DMA circular buffer */
