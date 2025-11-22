@@ -43,6 +43,25 @@ static DataRecord_t temp_record;
 extern Mahony_Filter_t mahony_filter;
 
 /**
+ * @brief Erase a range of flash memory by erasing all sectors in range
+ * @param start_addr: Start address (will be aligned to 4KB)
+ * @param end_addr: End address
+ * @return HAL_OK on success, HAL_ERROR on failure
+ */
+static HAL_StatusTypeDef EraseFlashRange(uint32_t start_addr, uint32_t end_addr) {
+    // Align start to sector boundary
+    uint32_t sector_start = (start_addr / SECTOR_SIZE) * SECTOR_SIZE;
+    uint32_t sector_end = ((end_addr + SECTOR_SIZE - 1) / SECTOR_SIZE) * SECTOR_SIZE;
+
+    for (uint32_t addr = sector_start; addr < sector_end; addr += SECTOR_SIZE) {
+        if (QSPI_Simple_Erase(addr) != HAL_OK) {
+            return HAL_ERROR;
+        }
+    }
+    return HAL_OK;
+}
+
+/**
  * @brief Pack data into 192-byte record structure (adapted for current system)
  * @note Uses SensorManager, Mahony filter, and GPS module
  * @note EKF fields are set to zero/NaN (no EKF in current system)
@@ -139,10 +158,7 @@ bool DataLogger_Init(void) {
     uint8_t flash_id[3] = {0};
 
     if (QSPI_Read_ID(flash_id) != HAL_OK) {
-        if (QSPI_Reset_After_Error() != HAL_OK) {
-            logger_status = LOGGER_ERROR;
-            return false;
-        }
+        // Retry after delay (no reset function available)
         HAL_Delay(100);
         if (QSPI_Read_ID(flash_id) != HAL_OK) {
             logger_status = LOGGER_ERROR;
@@ -236,8 +252,8 @@ bool DataLogger_RecordData(void) {
         return false;
     }
 
-    // Write to flash
-    HAL_StatusTypeDef write_result = CSP_QSPI_WriteMemory((uint8_t*)&temp_record, current_write_address, sizeof(DataRecord_t));
+    // Write to flash using DMA for efficiency
+    HAL_StatusTypeDef write_result = QSPI_Quad_Write_DMA((uint8_t*)&temp_record, current_write_address, sizeof(DataRecord_t));
 
     if (write_result != HAL_OK) {
         logger_status = LOGGER_ERROR;
@@ -358,8 +374,8 @@ bool DataLogger_EraseAll(void) {
         return false;
     }
 
-    // Erase data area only
-    if (CSP_QSPI_EraseSector(0, DATA_AREA_SIZE - 1) != HAL_OK) {
+    // Erase data area only (this will take time - ~10-30 seconds for 4MB)
+    if (EraseFlashRange(0, DATA_AREA_SIZE - 1) != HAL_OK) {
         return false;
     }
 
@@ -416,17 +432,18 @@ bool Metadata_Save(void) {
     current_metadata.checksum = Metadata_CalculateChecksum(&current_metadata);
 
     // Erase and write metadata
-    if (CSP_QSPI_EraseSector(METADATA_SECTOR_ADDR, METADATA_SECTOR_ADDR + METADATA_SECTOR_SIZE - 1) != HAL_OK) {
+    if (QSPI_Simple_Erase(METADATA_SECTOR_ADDR) != HAL_OK) {
         return false;
     }
 
-    if (CSP_QSPI_WriteMemory((uint8_t*)&current_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
+    // Write metadata (small, can use blocking write or DMA - using DMA for consistency)
+    if (QSPI_Quad_Write_DMA((uint8_t*)&current_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
         return false;
     }
 
     // Verify
     FlashMetadata_t verify_metadata;
-    if (CSP_QSPI_Read((uint8_t*)&verify_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
+    if (QSPI_Quad_Read((uint8_t*)&verify_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
         return false;
     }
 
@@ -444,7 +461,7 @@ bool Metadata_Load(void) {
     }
 
     FlashMetadata_t loaded_metadata;
-    if (CSP_QSPI_Read((uint8_t*)&loaded_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
+    if (QSPI_Quad_Read((uint8_t*)&loaded_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
         return false;
     }
 
