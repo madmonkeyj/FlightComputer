@@ -1,8 +1,9 @@
 /**
   ******************************************************************************
   * @file    ble_module.c
-  * @brief   BLE module with DMA circular buffer (same pattern as GPS)
-  * @note    Converted from interrupt-based to DMA for consistency and efficiency
+  * @brief   BLE module with interrupt-based reception for simple commands
+  * @note    Simple interrupt RX for low-frequency command interface
+  *          DMA is overkill for receiving ~10 bytes/second command strings
   ******************************************************************************
   */
 
@@ -13,17 +14,11 @@
 #include <stdio.h>
 #include "data_logger.h"
 
-/* External DMA handle for USART1 RX (defined in usart.c) */
-extern DMA_HandleTypeDef hdma_usart1_rx;
-
 /* Private variables - fully encapsulated within module */
-#define BLE_RX_BUFFER_SIZE 512  /* Circular DMA buffer size */
 
-/* DMA circular buffer variables (same pattern as GPS) */
-static uint8_t ble_rx_dma_buffer[BLE_RX_BUFFER_SIZE];
-static uint16_t buffer_read_pos = 0;
-static volatile uint16_t last_dma_write_pos = 0;  /* Updated by DMA idle callback */
-static bool dma_active = false;
+/* Single byte interrupt reception */
+static uint8_t rx_byte = 0;
+static bool rx_active = false;
 
 /* Command processing buffer */
 static uint8_t rx_buffer[128];
@@ -58,7 +53,7 @@ static void ClearResponseBuffer(void);
 static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32_t timeout);
 static void ResetBleModule(void);
 static void BLE_ProcessReceivedByte(uint8_t byte);
-static bool BLE_StartDMA(void);
+static void BLE_StartInterruptRx(void);
 static void BLE_ProcessCommand(const char* command);
 static void BLE_ProcessIncompleteBuffer(void);
 static bool IsProtocolOverhead(const uint8_t* data, uint16_t length);
@@ -235,12 +230,10 @@ static bool EnterCommandMode(void) {
  * @brief Initialize BLE module with DMA
  */
 bool BLE_Init(void) {
-    DebugPrint("BLE: Initializing BLE module (DMA mode)...\r\n");
+    DebugPrint("BLE: Initializing BLE module (interrupt mode)...\r\n");
 
     /* Reset all private variables */
-    buffer_read_pos = 0;
-    last_dma_write_pos = 0;
-    dma_active = false;
+    rx_active = false;
     rx_index = 0;
     last_rx_time = 0;
     last_tx_time = 0;
@@ -257,7 +250,6 @@ bool BLE_Init(void) {
     char_timeout_ms = 2000;  // 2 second timeout
 
     /* Clear buffers */
-    memset(ble_rx_dma_buffer, 0, sizeof(ble_rx_dma_buffer));
     memset(rx_buffer, 0, sizeof(rx_buffer));
     memset(uart_response_buffer, 0, sizeof(uart_response_buffer));
 
@@ -269,19 +261,14 @@ bool BLE_Init(void) {
         return false;
     }
 
-    /* Start DMA reception */
-    if (!BLE_StartDMA()) {
-        DebugPrint("BLE: ERROR - DMA start failed\r\n");
-        ble_status = BLE_STATUS_ERROR;
-        ble_initialized = false;
-        return false;
-    }
+    /* Start interrupt reception */
+    BLE_StartInterruptRx();
 
     ble_status = BLE_STATUS_DISCONNECTED; /* Ready but not connected */
     ble_initialized = true;
     last_rx_time = HAL_GetTick();
 
-    DebugPrint("BLE: Module initialized successfully (DMA active)\r\n");
+    DebugPrint("BLE: Module initialized successfully (interrupt RX active)\r\n");
     char timeout_msg[50];
     snprintf(timeout_msg, sizeof(timeout_msg), "BLE: Command timeout set to %lums\r\n", char_timeout_ms);
     DebugPrint(timeout_msg);
@@ -340,48 +327,12 @@ bool BLE_SendResponse(const char* response) {
 }
 
 /**
- * @brief Update BLE module - DMA version (same pattern as GPS)
+ * @brief Update BLE module - handles timeouts and connection status
+ * @note Call regularly from main loop
  */
 void BLE_Update(void) {
-    if (!ble_initialized || !dma_active) {
+    if (!ble_initialized) {
         return;
-    }
-
-    /* Get stable snapshot of DMA write position (updated by idle line callback) */
-    uint16_t current_write_pos = last_dma_write_pos;
-
-    /* DEBUG: Periodically show buffer status */
-    static uint32_t last_debug_time = 0;
-    if (HAL_GetTick() - last_debug_time > 5000) {  // Every 5 seconds
-        last_debug_time = HAL_GetTick();
-
-        // Check DMA counter directly to see if data is arriving
-        extern DMA_HandleTypeDef hdma_usart1_rx;
-        uint16_t dma_counter = __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
-        uint16_t direct_write_pos = BLE_RX_BUFFER_SIZE - dma_counter;
-
-        char debug_msg[150];
-        snprintf(debug_msg, sizeof(debug_msg),
-                "BLE: R=%u W=%u DirectW=%u DmaCnt=%u RxIdx=%u LastRx=%lums\r\n",
-                buffer_read_pos, current_write_pos, direct_write_pos, dma_counter,
-                rx_index, HAL_GetTick() - last_rx_time);
-        DebugPrint(debug_msg);
-
-        // Check DMA state for diagnostics (should stay BUSY_RX with auto-restart in callback)
-        if (huart1.RxState == HAL_UART_STATE_BUSY_RX) {
-            DebugPrint("BLE: DMA state = BUSY_RX (good)\r\n");
-        } else {
-            char state_msg[80];
-            snprintf(state_msg, sizeof(state_msg), "BLE: WARNING - DMA state=%d (idle callback should auto-restart!)\r\n", huart1.RxState);
-            DebugPrint(state_msg);
-        }
-    }
-
-    /* Process all bytes from DMA circular buffer */
-    while (buffer_read_pos != current_write_pos) {
-        uint8_t byte = ble_rx_dma_buffer[buffer_read_pos];
-        BLE_ProcessReceivedByte(byte);
-        buffer_read_pos = (buffer_read_pos + 1) % BLE_RX_BUFFER_SIZE;
     }
 
     /* Handle command timeout */
@@ -564,7 +515,7 @@ bool BLE_GetStatistics(BLE_Statistics_t* stats) {
     stats->total_bytes_sent = total_bytes_sent;
     stats->last_activity_time = last_rx_time;
     stats->connection_count = connection_count;
-    stats->uart_active = dma_active;  /* DMA active status (was uart_rx_active in interrupt mode) */
+    stats->uart_active = rx_active;  /* Interrupt RX active status */
     stats->status = ble_status;
 
     return true;
@@ -707,8 +658,9 @@ static void ClearResponseBuffer(void) {
 }
 
 /**
- * @brief Enhanced command sending - uses DMA if active, otherwise blocking UART
- * @note Adaptive method handles both configuration (pre-DMA) and runtime (DMA active)
+ * @brief Send BLE command and wait for response - uses blocking UART
+ * @note Used during configuration before interrupt RX is active
+ * @note TX is always blocking and doesn't conflict with interrupt RX
  */
 static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32_t timeout) {
     char debugMsg[300];
@@ -728,70 +680,32 @@ static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32
     }
     total_bytes_sent += strlen(cmd);
 
-    // Wait for response - method depends on whether DMA is active
+    // Wait for response using blocking UART receive
     uint32_t startTime = HAL_GetTick();
     bool responseFound = false;
     int bytes_received = 0;
 
-    if (dma_active) {
-        /* DMA Mode: Read from circular buffer (used during runtime) */
-        while ((HAL_GetTick() - startTime) < timeout && !responseFound) {
-            // Get current DMA write position (volatile, updated by ISR)
-            uint16_t current_write_pos = last_dma_write_pos;
+    /* Blocking Mode: Use HAL UART receive (safe during configuration) */
+    while ((HAL_GetTick() - startTime) < timeout && !responseFound) {
+        uint8_t tempByte;
+        HAL_StatusTypeDef rx_status = HAL_UART_Receive(&huart1, &tempByte, 1, 1);
 
-            // Read all available bytes from DMA circular buffer
-            while (buffer_read_pos != current_write_pos) {
-                uint8_t tempByte = ble_rx_dma_buffer[buffer_read_pos];
-                buffer_read_pos = (buffer_read_pos + 1) % BLE_RX_BUFFER_SIZE;
-
-                bytes_received++;
-                if (uart_response_index < sizeof(uart_response_buffer) - 1) {
-                    uart_response_buffer[uart_response_index++] = tempByte;
-                    uart_response_buffer[uart_response_index] = '\0';
-                }
-
-                // Check for expected response
-                if (expectedResponse == NULL) {
-                    responseFound = true;
-                    break;
-                } else if (strstr(uart_response_buffer, expectedResponse) != NULL) {
-                    responseFound = true;
-                    break;
-                } else if (strstr(uart_response_buffer, "ERR") != NULL) {
-                    snprintf(debugMsg, sizeof(debugMsg), "BLE: Got error response: %s\r\n", uart_response_buffer);
-                    DebugPrint(debugMsg);
-                    return false;
-                }
+        if (rx_status == HAL_OK) {
+            bytes_received++;
+            if (uart_response_index < sizeof(uart_response_buffer) - 1) {
+                uart_response_buffer[uart_response_index++] = tempByte;
+                uart_response_buffer[uart_response_index] = '\0';
             }
 
-            // Small delay to avoid busy-waiting
-            if (!responseFound) {
-                HAL_Delay(1);
-            }
-        }
-    } else {
-        /* Blocking Mode: Use HAL UART receive (used during configuration) */
-        while ((HAL_GetTick() - startTime) < timeout && !responseFound) {
-            uint8_t tempByte;
-            HAL_StatusTypeDef rx_status = HAL_UART_Receive(&huart1, &tempByte, 1, 1);
-
-            if (rx_status == HAL_OK) {
-                bytes_received++;
-                if (uart_response_index < sizeof(uart_response_buffer) - 1) {
-                    uart_response_buffer[uart_response_index++] = tempByte;
-                    uart_response_buffer[uart_response_index] = '\0';
-                }
-
-                // Check for expected response
-                if (expectedResponse == NULL) {
-                    responseFound = true;
-                } else if (strstr(uart_response_buffer, expectedResponse) != NULL) {
-                    responseFound = true;
-                } else if (strstr(uart_response_buffer, "ERR") != NULL) {
-                    snprintf(debugMsg, sizeof(debugMsg), "BLE: Got error response: %s\r\n", uart_response_buffer);
-                    DebugPrint(debugMsg);
-                    return false;
-                }
+            // Check for expected response
+            if (expectedResponse == NULL) {
+                responseFound = true;
+            } else if (strstr(uart_response_buffer, expectedResponse) != NULL) {
+                responseFound = true;
+            } else if (strstr(uart_response_buffer, "ERR") != NULL) {
+                snprintf(debugMsg, sizeof(debugMsg), "BLE: Got error response: %s\r\n", uart_response_buffer);
+                DebugPrint(debugMsg);
+                return false;
             }
         }
     }
@@ -903,96 +817,53 @@ static void BLE_ProcessReceivedByte(uint8_t byte) {
 }
 
 /**
- * @brief Start DMA reception with circular buffer (same pattern as GPS)
+ * @brief Start interrupt-based reception (simple byte-by-byte)
  */
-static bool BLE_StartDMA(void) {
-    DebugPrint("BLE: Starting DMA circular buffer reception...\r\n");
+static void BLE_StartInterruptRx(void) {
+    DebugPrint("BLE: Starting interrupt RX...\r\n");
 
-    /* Clear any pending UART errors */
-    __HAL_UART_CLEAR_OREFLAG(&huart1);
-    __HAL_UART_CLEAR_NEFLAG(&huart1);
-    __HAL_UART_CLEAR_FEFLAG(&huart1);
-    __HAL_UART_CLEAR_PEFLAG(&huart1);
-
-    /* Abort any ongoing reception */
-    HAL_UART_AbortReceive(&huart1);
-
-    /* Start DMA in circular mode with idle line detection */
-    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ble_rx_dma_buffer, BLE_RX_BUFFER_SIZE) != HAL_OK) {
-        dma_active = false;
-        DebugPrint("BLE: ❌ HAL_UARTEx_ReceiveToIdle_DMA failed\r\n");
-        return false;
-    }
-
-    /* Disable half-transfer interrupt (we don't need it) */
-    __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
-
-    dma_active = true;
-    DebugPrint("BLE: ✅ DMA circular buffer active\r\n");
-    return true;
-}
-
-/**
- * @brief BLE UART RX Event handler - called from unified callback in gps_module.c
- * @note This is called when UART idle line is detected (message boundary)
- * @note CRITICAL: HAL_UARTEx_ReceiveToIdle_DMA is NOT circular - it STOPS on idle!
- *       We must immediately restart it here to maintain continuous reception
- */
-void BLE_UART_RxEventCallback(void) {
-    /* Update DMA write position on idle line detection */
-    last_dma_write_pos = BLE_RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
-    last_rx_time = HAL_GetTick();
-
-    /* CRITICAL: Restart DMA immediately - ReceiveToIdle_DMA stops after idle! */
-    if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ble_rx_dma_buffer, BLE_RX_BUFFER_SIZE) != HAL_OK) {
-        DebugPrint("BLE: ERROR - Failed to restart DMA in idle callback!\r\n");
-        dma_active = false;
+    /* Start receiving 1 byte at a time via interrupt */
+    if (HAL_UART_Receive_IT(&huart1, &rx_byte, 1) == HAL_OK) {
+        rx_active = true;
+        DebugPrint("BLE: ✅ Interrupt RX active\r\n");
     } else {
-        /* Disable half-transfer interrupt (we don't need it) */
-        __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
+        rx_active = false;
+        DebugPrint("BLE: ❌ Interrupt RX failed to start\r\n");
     }
 }
 
 /**
- * @brief UART RX Complete Callback - handles DMA completion (timeout/buffer full)
- * @note Called when ReceiveToIdle_DMA completes due to timeout or buffer full
- * @note This is the "no data" case - restart DMA to keep receiving
+ * @brief UART RX Complete Callback - handles interrupt byte reception
+ * @note Called when 1 byte is received via HAL_UART_Receive_IT
+ * @note Automatically restarts reception for next byte
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
-        /* BLE: DMA completed (timeout or buffer full) - restart immediately */
-        DebugPrint("BLE: DMA completed (timeout) - auto-restarting...\r\n");
+        /* Process the received byte */
+        BLE_ProcessReceivedByte(rx_byte);
 
-        /* Update write position before restart */
-        last_dma_write_pos = BLE_RX_BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
-
-        /* Restart DMA */
-        if (HAL_UARTEx_ReceiveToIdle_DMA(&huart1, ble_rx_dma_buffer, BLE_RX_BUFFER_SIZE) != HAL_OK) {
-            DebugPrint("BLE: ERROR - Failed to restart DMA in completion callback!\r\n");
-            dma_active = false;
-        } else {
-            __HAL_DMA_DISABLE_IT(&hdma_usart1_rx, DMA_IT_HT);
-        }
+        /* Immediately start receiving next byte */
+        HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
     }
 }
 
-/* Legacy compatibility functions - deprecated with DMA implementation */
+/* Legacy compatibility functions - deprecated with interrupt implementation */
 
 /**
- * @brief Legacy byte handler - DEPRECATED (DMA mode doesn't use byte-by-byte)
+ * @brief Legacy byte handler - DEPRECATED (interrupt mode handles bytes automatically)
  * @deprecated Use BLE_Update() in main loop instead
  */
 void HandleReceivedByte(uint8_t byte) {
     (void)byte;
-    /* No-op: DMA mode processes bytes from circular buffer in BLE_Update() */
+    /* No-op: Interrupt mode processes bytes via HAL_UART_RxCpltCallback */
 }
 
 /**
- * @brief Legacy UART start - DEPRECATED (DMA auto-starts)
- * @deprecated DMA starts automatically in BLE_Init()
+ * @brief Legacy UART start - DEPRECATED (interrupt auto-starts)
+ * @deprecated Interrupt RX starts automatically in BLE_Init()
  */
 void StartUartReception(void) {
-    /* No-op: DMA is started in BLE_Init() */
+    /* No-op: Interrupt RX is started in BLE_Init() */
 }
 
 /**

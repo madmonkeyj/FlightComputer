@@ -1,12 +1,12 @@
 /**
   ******************************************************************************
   * @file    ble_module.h
-  * @brief   BLE module with DMA circular buffer - Self-Managing Header
-  * @note    Uses DMA with idle line detection (same pattern as GPS module)
-  * @note    Converted from interrupt-based to DMA for consistency and efficiency
+  * @brief   BLE module with interrupt-based reception - Self-Managing Header
+  * @note    Uses simple interrupt RX for low-frequency command interface
+  * @note    Optimized for receiving ~10 bytes/second command strings
   *
   * @hardware RN4871 Bluetooth Low Energy Module
-  * @interface USART1 @ 115200 baud with DMA
+  * @interface USART1 @ 115200 baud with interrupt RX
   * @gpio Required GPIO pins (defined in main.h):
   *       - RST_BT (PC6) → RN4871 RST_N: Hardware reset (active LOW)
   *       - CONFIG (PB15) → RN4871 P2_0: Set HIGH for active operation
@@ -55,18 +55,17 @@ typedef void (*BLE_CommandCallback_t)(const char* command);
  */
 
 /**
- * @brief Initialize BLE module with DMA circular buffer
+ * @brief Initialize BLE module with interrupt-based reception
  * @return true if initialization successful
- * @note Sets up DMA with idle line detection (same pattern as GPS)
+ * @note Sets up simple interrupt RX for byte-by-byte reception
  * @note Sets up 2s command timeout automatically
  */
 bool BLE_Init(void);
 
 /**
  * @brief Update BLE module - call regularly from main loop
- * @note Processes data from DMA circular buffer
- * @note Handles command processing and timeout
- * @note Uses idle line detection for message boundaries
+ * @note Handles command timeout and connection status
+ * @note Does NOT process received data (handled by interrupt)
  * @note This is the ONLY function you need to call - everything else is automatic
  */
 void BLE_Update(void);
@@ -171,18 +170,10 @@ bool BLE_Configure_NoConfig(void);
  */
 bool BLE_GetLastCommand(char* command_buffer, size_t buffer_size);
 
-/* Internal callback for DMA idle line detection */
-/**
- * @brief BLE UART RX Event handler - called from unified HAL_UARTEx_RxEventCallback
- * @note Internal function called by GPS module's unified UART callback
- * @note Do not call this directly - it's invoked automatically on idle line detection
- */
-void BLE_UART_RxEventCallback(void);
-
-/* Legacy compatibility functions - DEPRECATED with DMA implementation */
-/* These are no-ops in DMA mode - kept for backward compatibility only */
-void HandleReceivedByte(uint8_t byte);  /* @deprecated No-op in DMA mode */
-void StartUartReception(void);          /* @deprecated No-op in DMA mode (auto-starts) */
+/* Legacy compatibility functions - DEPRECATED with interrupt implementation */
+/* These are no-ops in interrupt mode - kept for backward compatibility only */
+void HandleReceivedByte(uint8_t byte);  /* @deprecated No-op in interrupt mode */
+void StartUartReception(void);          /* @deprecated No-op in interrupt mode (auto-starts) */
 bool ConfigureModule(void);             /* @deprecated Use BLE_Configure() instead */
 
 #endif /* BLE_MODULE_H_ */
