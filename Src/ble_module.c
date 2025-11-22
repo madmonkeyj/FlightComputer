@@ -62,6 +62,7 @@ static bool BLE_StartDMA(void);
 static void BLE_ProcessCommand(const char* command);
 static void BLE_ProcessIncompleteBuffer(void);
 static bool IsProtocolOverhead(const uint8_t* data, uint16_t length);
+static bool IsInCommandMode(void);
 
 bool BLE_GetLastCommand(char* command_buffer, size_t buffer_size) {
     if (command_received_flag && command_buffer && buffer_size > 0) {
@@ -158,10 +159,38 @@ bool BLE_Configure_NoConfig(void) {
 }
 
 /**
+ * @brief Check if already in command mode
+ */
+static bool IsInCommandMode(void) {
+    DebugPrint("BLE: Checking if already in command mode...\r\n");
+    ClearResponseBuffer();
+
+    // Send a simple command that returns the prompt
+    // V command shows version, or if in data mode it just passes through
+    if (SendBleCommand("V\r", "Ver", 1000)) {
+        DebugPrint("BLE: Already in command mode (got version)\r\n");
+        return true;
+    }
+
+    // Check if we got CMD> prompt in the response
+    if (strstr(uart_response_buffer, "CMD>") != NULL) {
+        DebugPrint("BLE: Already in command mode (got prompt)\r\n");
+        return true;
+    }
+
+    return false;
+}
+
+/**
  * @brief Try multiple times to enter command mode
  */
 static bool EnterCommandMode(void) {
     DebugPrint("BLE: Attempting to enter command mode...\r\n");
+
+    // First check if already in command mode
+    if (IsInCommandMode()) {
+        return true;
+    }
 
     for (int attempt = 1; attempt <= 5; attempt++) {
         char attempt_msg[50];
@@ -544,20 +573,9 @@ bool BLE_Configure(void) {
     bool success = true;
     int failed_commands = 0;
 
-    // Factory reset
-    DebugPrint("BLE: Performing factory reset...\r\n");
-    if (!SendBleCommand("SF,1\r", "Reboot", 3000)) {
-        DebugPrint("BLE: WARNING - Factory reset failed\r\n");
-        failed_commands++;
-    } else {
-        HAL_Delay(5000); // Wait longer after factory reset
-    }
-
-    // Re-enter command mode after factory reset
-    if (!EnterCommandMode()) {
-        DebugPrint("BLE: ERROR - Cannot re-enter command mode after factory reset\r\n");
-        return false;
-    }
+    // Skip factory reset - causes issues with re-entering command mode
+    // Module will use existing configuration or defaults
+    DebugPrint("BLE: Skipping factory reset (using existing config)\r\n");
 
     // Configure device name
     DebugPrint("BLE: Setting device name...\r\n");
