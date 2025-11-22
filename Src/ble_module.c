@@ -760,25 +760,17 @@ static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32
 static void ResetBleModule(void) {
     DebugPrint("BLE: Hardware resetting BLE module...\r\n");
 
-    /* CRITICAL: Set CONFIG pin HIGH before reset for normal UART mode */
-    /* CONFIG pin LOW = configuration mode, HIGH = normal operation */
-    HAL_GPIO_WritePin(CONFIG_GPIO_Port, CONFIG_Pin, GPIO_PIN_SET);
-    DebugPrint("BLE: CONFIG pin set HIGH (normal UART mode)\r\n");
+    /* RN4871 BLE module only uses RST_BT pin (PC6) */
+    /* Note: CONFIG (PB15) and LPM (PA8) are for LoRa/Radio, NOT for BLE module! */
+    /* Do not touch CONFIG or LPM pins - they control other hardware */
 
-    /* Set LPM pin HIGH for active operation (not low power mode) */
-    HAL_GPIO_WritePin(LPM_GPIO_Port, LPM_Pin, GPIO_PIN_SET);
-    DebugPrint("BLE: LPM pin set HIGH (active mode)\r\n");
-
-    HAL_Delay(10); // Brief delay for pins to stabilize
-
-    /* Hardware reset sequence */
+    /* Hardware reset sequence - RST_BT is active LOW */
     HAL_GPIO_WritePin(RST_BT_GPIO_Port, RST_BT_Pin, GPIO_PIN_RESET);
-    HAL_Delay(500);  // Hold in reset for 500ms
+    HAL_Delay(100);  // Hold in reset for 100ms (datasheet minimum: 2μs)
 
     HAL_GPIO_WritePin(RST_BT_GPIO_Port, RST_BT_Pin, GPIO_PIN_SET);
-    HAL_Delay(5000); // Wait 5s for module to boot (datasheet says ~22ms typical)
-
-    DebugPrint("BLE: Module reset complete\r\n");
+    DebugPrint("BLE: Module reset complete, waiting for boot...\r\n");
+    HAL_Delay(500);  // Wait for module to boot (datasheet: ~22ms typical, 125ms max)
 
     // Clear any pending UART data
     uint8_t dummy;

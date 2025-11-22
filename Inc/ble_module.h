@@ -9,11 +9,9 @@
   * @interface USART1 @ 115200 baud with DMA
   * @gpio Required GPIO pins (defined in main.h):
   *       - RST_BT (PC6): Hardware reset (active LOW)
-  *       - CONFIG (PB15): Configuration mode select (HIGH = normal, LOW = config)
-  *       - LPM (PA8): Low power mode control (HIGH = active, LOW = sleep)
   *
-  * @critical CONFIG pin MUST be HIGH for normal UART operation
-  *           If CONFIG is LOW or floating, module enters config mode and won't respond
+  * @note Other GPIO pins in main.h (CONFIG, LPM) are for LoRa/Radio, NOT BLE!
+  *       Do not control CONFIG (PB15) or LPM (PA8) from BLE module code.
   ******************************************************************************
   */
 
