@@ -172,6 +172,26 @@ int main(void)
       DebugPrint("ERROR: BLE Module initialization failed!\r\n");
   }
 
+  // ===== MAHONY FILTER INITIALIZATION =====
+  // Initialize Mahony AHRS filter (500 Hz update rate, Kp=1.0, Ki=0.0)
+  Mahony_Init(&mahony_filter, 500.0f, 1.0f, 0.0f);
+  DebugPrint("Mahony AHRS filter initialized (500 Hz)\r\n");
+
+  // ===== DATA LOGGER INITIALIZATION =====
+  // Initialize data logger and QSPI flash
+  if (DataLogger_Init()) {
+      DebugPrint("Data Logger initialized successfully\r\n");
+
+      // Display flash status
+      char status_buffer[200];
+      if (DataLogger_GetStatusString(status_buffer, sizeof(status_buffer))) {
+          DebugPrint(status_buffer);
+          DebugPrint("\r\n");
+      }
+  } else {
+      DebugPrint("ERROR: Data Logger initialization failed!\r\n");
+  }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -188,6 +208,13 @@ int main(void)
         // CRITICAL: Call BLE_Update() every loop iteration
         // This handles UART reception, command processing, and timeout
         BLE_Update();
+
+        // ===== DATA LOGGER UPDATE =====
+        // Record data if logger is in RECORDING state
+        // This function handles rate limiting internally (based on RECORDING_INTERVAL_MS)
+        if (DataLogger_IsRecording()) {
+            DataLogger_RecordData();
+        }
 
         // Send test data every 1 second
         uint32_t current_time = HAL_GetTick();
