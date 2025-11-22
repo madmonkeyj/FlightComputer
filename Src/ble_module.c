@@ -742,7 +742,18 @@ static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32
 static void ResetBleModule(void) {
     DebugPrint("BLE: Hardware resetting BLE module...\r\n");
 
-    // Ensure reset pin is properly configured as output
+    /* CRITICAL: Set CONFIG pin HIGH before reset for normal UART mode */
+    /* CONFIG pin LOW = configuration mode, HIGH = normal operation */
+    HAL_GPIO_WritePin(CONFIG_GPIO_Port, CONFIG_Pin, GPIO_PIN_SET);
+    DebugPrint("BLE: CONFIG pin set HIGH (normal UART mode)\r\n");
+
+    /* Set LPM pin HIGH for active operation (not low power mode) */
+    HAL_GPIO_WritePin(LPM_GPIO_Port, LPM_Pin, GPIO_PIN_SET);
+    DebugPrint("BLE: LPM pin set HIGH (active mode)\r\n");
+
+    HAL_Delay(10); // Brief delay for pins to stabilize
+
+    /* Hardware reset sequence */
     HAL_GPIO_WritePin(RST_BT_GPIO_Port, RST_BT_Pin, GPIO_PIN_RESET);
     HAL_Delay(500);  // Hold in reset for 500ms
 
