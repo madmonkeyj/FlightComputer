@@ -8,10 +8,11 @@
   * @hardware RN4871 Bluetooth Low Energy Module
   * @interface USART1 @ 115200 baud with DMA
   * @gpio Required GPIO pins (defined in main.h):
-  *       - RST_BT (PC6): Hardware reset (active LOW)
+  *       - RST_BT (PC6) → RN4871 RST_N: Hardware reset (active LOW)
+  *       - CONFIG (PB15) → RN4871 P2_0: Set HIGH for active operation
+  *       - LPM (PA8) → RN4871 P1_6: Set HIGH for active (non-sleep) mode
   *
-  * @note Other GPIO pins in main.h (CONFIG, LPM) are for LoRa/Radio, NOT BLE!
-  *       Do not control CONFIG (PB15) or LPM (PA8) from BLE module code.
+  * @note All three pins are BLE module specific and controlled during init
   ******************************************************************************
   */
 
