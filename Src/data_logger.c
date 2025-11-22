@@ -378,6 +378,42 @@ bool DataLogger_GetStatusString(char* buffer, size_t buffer_size) {
                 stats.flash_ready ? "Ready" : "Error", stats.record_size);
     }
 
+    if (memcmp(&current_metadata, &verify_metadata, sizeof(FlashMetadata_t)) != 0) {
+        return false;
+    }
+
+    metadata_loaded = true;
+    return true;
+}
+
+bool Metadata_Load(void) {
+    if (!flash_initialized) {
+        return false;
+    }
+
+    FlashMetadata_t loaded_metadata;
+    if (QSPI_Quad_Read((uint8_t*)&loaded_metadata, METADATA_SECTOR_ADDR, sizeof(FlashMetadata_t)) != HAL_OK) {
+        return false;
+    }
+
+    if (!Metadata_Validate(&loaded_metadata)) {
+        return false;
+    }
+
+    // Restore state
+    current_metadata = loaded_metadata;
+    records_written = current_metadata.records_written;
+    current_write_address = current_metadata.current_write_address;
+    recording_start_time = current_metadata.recording_start_time;
+    last_record_time = current_metadata.last_record_time;
+    logger_status = (LoggerStatus_t)current_metadata.logger_status;
+
+    // Don't resume recording after power cycle
+    if (logger_status == LOGGER_RECORDING) {
+        logger_status = LOGGER_IDLE;
+    }
+
+    metadata_loaded = true;
     return true;
 }
 

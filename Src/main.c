@@ -55,6 +55,9 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+/* Mahony Filter - Global instance for data_logger access */
+Mahony_Filter_t mahony_filter;
+
 /* BLE Test Variables */
 static uint32_t ble_test_counter = 0;
 static uint32_t last_ble_send_time = 0;
