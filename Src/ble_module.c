@@ -233,7 +233,7 @@ bool BLE_Init(void) {
     memset(uart_response_buffer, 0, sizeof(uart_response_buffer));
 
     /* Configure the BLE module */
-    if (!BLE_Configure_NoConfig()) {
+    if (!BLE_Configure()) {
         DebugPrint("BLE: ERROR - Configuration failed\r\n");
         ble_status = BLE_STATUS_ERROR;
         ble_initialized = false;
@@ -676,26 +676,37 @@ static void ClearResponseBuffer(void) {
 }
 
 /**
- * @brief Enhanced command sending with better timeout handling
+ * @brief Enhanced command sending with better timeout handling and diagnostics
  */
 static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32_t timeout) {
     char debugMsg[300];
 
     ClearResponseBuffer();
-    sprintf(debugMsg, "BLE: Sending command: %s", cmd);
+
+    // Show command with length
+    snprintf(debugMsg, sizeof(debugMsg), "BLE: Sending '%s' (%d bytes)\r\n", cmd, strlen(cmd));
     DebugPrint(debugMsg);
 
-    // Send command
-    HAL_UART_Transmit(&huart1, (uint8_t*)cmd, strlen(cmd), 1000);
+    // Send command with error checking
+    HAL_StatusTypeDef tx_status = HAL_UART_Transmit(&huart1, (uint8_t*)cmd, strlen(cmd), 1000);
+    if (tx_status != HAL_OK) {
+        snprintf(debugMsg, sizeof(debugMsg), "BLE: ERROR - UART transmit failed (status=%d)\r\n", tx_status);
+        DebugPrint(debugMsg);
+        return false;
+    }
     total_bytes_sent += strlen(cmd);
 
     // Wait for response
     uint32_t startTime = HAL_GetTick();
     bool responseFound = false;
+    int bytes_received = 0;
 
     while ((HAL_GetTick() - startTime) < timeout && !responseFound) {
         uint8_t tempByte;
-        if (HAL_UART_Receive(&huart1, &tempByte, 1, 1) == HAL_OK) {
+        HAL_StatusTypeDef rx_status = HAL_UART_Receive(&huart1, &tempByte, 1, 1);
+
+        if (rx_status == HAL_OK) {
+            bytes_received++;
             if (uart_response_index < sizeof(uart_response_buffer) - 1) {
                 uart_response_buffer[uart_response_index++] = tempByte;
                 uart_response_buffer[uart_response_index] = '\0';
@@ -715,11 +726,11 @@ static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32
     }
 
     if (responseFound) {
-        snprintf(debugMsg, sizeof(debugMsg), "BLE: Got response: %s\r\n", uart_response_buffer);
+        snprintf(debugMsg, sizeof(debugMsg), "BLE: SUCCESS - Got '%s' (%d bytes)\r\n", uart_response_buffer, bytes_received);
         DebugPrint(debugMsg);
         return true;
     } else {
-        snprintf(debugMsg, sizeof(debugMsg), "BLE: Command timeout! Response: %s\r\n", uart_response_buffer);
+        snprintf(debugMsg, sizeof(debugMsg), "BLE: TIMEOUT - Received %d bytes: '%s'\r\n", bytes_received, uart_response_buffer);
         DebugPrint(debugMsg);
         return false;
     }
@@ -731,21 +742,46 @@ static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32
 static void ResetBleModule(void) {
     DebugPrint("BLE: Hardware resetting BLE module...\r\n");
 
-    // Ensure reset pin is properly configured as output
+    /* CRITICAL: Set CONFIG pin HIGH before reset for normal UART mode */
+    /* CONFIG pin LOW = configuration mode, HIGH = normal operation */
+    HAL_GPIO_WritePin(CONFIG_GPIO_Port, CONFIG_Pin, GPIO_PIN_SET);
+    DebugPrint("BLE: CONFIG pin set HIGH (normal UART mode)\r\n");
+
+    /* Set LPM pin HIGH for active operation (not low power mode) */
+    HAL_GPIO_WritePin(LPM_GPIO_Port, LPM_Pin, GPIO_PIN_SET);
+    DebugPrint("BLE: LPM pin set HIGH (active mode)\r\n");
+
+    HAL_Delay(10); // Brief delay for pins to stabilize
+
+    /* Hardware reset sequence */
     HAL_GPIO_WritePin(RST_BT_GPIO_Port, RST_BT_Pin, GPIO_PIN_RESET);
-    HAL_Delay(500);  // Increased from 200ms to 500ms
+    HAL_Delay(500);  // Hold in reset for 500ms
 
     HAL_GPIO_WritePin(RST_BT_GPIO_Port, RST_BT_Pin, GPIO_PIN_SET);
-    HAL_Delay(5000); // Increased from 3000ms to 5000ms - give module more time
+    HAL_Delay(5000); // Wait 5s for module to boot (datasheet says ~22ms typical)
 
     DebugPrint("BLE: Module reset complete\r\n");
 
     // Clear any pending UART data
     uint8_t dummy;
+    int bytes_cleared = 0;
     while (HAL_UART_Receive(&huart1, &dummy, 1, 10) == HAL_OK) {
-        // Drain any leftover data
+        bytes_cleared++;
     }
-    DebugPrint("BLE: UART buffer cleared\r\n");
+
+    char debug_msg[64];
+    snprintf(debug_msg, sizeof(debug_msg), "BLE: UART buffer cleared (%d bytes)\r\n", bytes_cleared);
+    DebugPrint(debug_msg);
+
+    // DIAGNOSTIC: Try sending test data to verify UART TX works
+    const char* test_msg = "UART_TEST\r\n";
+    HAL_StatusTypeDef tx_status = HAL_UART_Transmit(&huart1, (uint8_t*)test_msg, strlen(test_msg), 1000);
+    if (tx_status == HAL_OK) {
+        DebugPrint("BLE: UART TX test successful\r\n");
+    } else {
+        snprintf(debug_msg, sizeof(debug_msg), "BLE: WARNING - UART TX test failed (status=%d)\r\n", tx_status);
+        DebugPrint(debug_msg);
+    }
 }
 
 /**

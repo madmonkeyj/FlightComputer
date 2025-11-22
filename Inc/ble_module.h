@@ -4,6 +4,16 @@
   * @brief   BLE module with DMA circular buffer - Self-Managing Header
   * @note    Uses DMA with idle line detection (same pattern as GPS module)
   * @note    Converted from interrupt-based to DMA for consistency and efficiency
+  *
+  * @hardware RN4871 Bluetooth Low Energy Module
+  * @interface USART1 @ 115200 baud with DMA
+  * @gpio Required GPIO pins (defined in main.h):
+  *       - RST_BT (PC6): Hardware reset (active LOW)
+  *       - CONFIG (PB15): Configuration mode select (HIGH = normal, LOW = config)
+  *       - LPM (PA8): Low power mode control (HIGH = active, LOW = sleep)
+  *
+  * @critical CONFIG pin MUST be HIGH for normal UART operation
+  *           If CONFIG is LOW or floating, module enters config mode and won't respond
   ******************************************************************************
   */
 
