@@ -508,7 +508,7 @@ bool BLE_GetStatistics(BLE_Statistics_t* stats) {
     stats->total_bytes_sent = total_bytes_sent;
     stats->last_activity_time = last_rx_time;
     stats->connection_count = connection_count;
-    stats->uart_active = uart_rx_active;
+    stats->uart_active = dma_active;  /* DMA active status (was uart_rx_active in interrupt mode) */
     stats->status = ble_status;
 
     return true;

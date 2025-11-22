@@ -150,15 +150,15 @@ int main(void)
   // Initialize BLE module
   if (BLE_Init()) {
       ble_initialized = true;
-      Debug_Print("BLE Module initialized successfully\r\n");
+      DebugPrint("BLE Module initialized successfully\r\n");
 
       // Register command callback for custom commands
       BLE_RegisterCommandCallback(BLE_CommandCallback);
-      Debug_Print("BLE Command callback registered\r\n");
+      DebugPrint("BLE Command callback registered\r\n");
 
       // Enable data transmission
       BLE_SetDataTransmissionEnabled(true);
-      Debug_Print("BLE Data transmission enabled\r\n");
+      DebugPrint("BLE Data transmission enabled\r\n");
 
       // Send welcome message
       BLE_SendResponse("=== FlightComputer BLE Test ===\r\n");
@@ -166,7 +166,7 @@ int main(void)
       BLE_SendResponse("Custom commands: test, info\r\n");
       BLE_SendResponse("Ready!\r\n");
   } else {
-      Debug_Print("ERROR: BLE Module initialization failed!\r\n");
+      DebugPrint("ERROR: BLE Module initialization failed!\r\n");
   }
 
   /* USER CODE END 2 */
@@ -211,7 +211,7 @@ int main(void)
                         stats.total_bytes_received,
                         stats.total_bytes_sent,
                         stats.connection_count);
-                Debug_Print(stats_msg);
+                DebugPrint(stats_msg);
             }
         }
     }
