@@ -367,13 +367,21 @@ void BLE_Update(void) {
                 rx_index, HAL_GetTick() - last_rx_time);
         DebugPrint(debug_msg);
 
-        // Check if DMA is still active
+        // Check if DMA is still active - restart if crashed
         if (huart1.RxState == HAL_UART_STATE_BUSY_RX) {
             DebugPrint("BLE: DMA UART state = BUSY_RX (good)\r\n");
         } else {
-            char state_msg[60];
-            snprintf(state_msg, sizeof(state_msg), "BLE: WARNING - UART RxState=%d (should be busy!)\r\n", huart1.RxState);
+            char state_msg[80];
+            snprintf(state_msg, sizeof(state_msg), "BLE: WARNING - UART RxState=%d (crashed!) - Restarting DMA...\r\n", huart1.RxState);
             DebugPrint(state_msg);
+
+            // Restart DMA reception
+            if (BLE_StartDMA()) {
+                DebugPrint("BLE: DMA restarted successfully\r\n");
+            } else {
+                DebugPrint("BLE: ERROR - Failed to restart DMA\r\n");
+                dma_active = false;
+            }
         }
     }
 
@@ -625,27 +633,12 @@ bool BLE_Configure(void) {
         failed_commands++;
     }
 
-    /* IMPORTANT: Transparent UART requires BOTH TX and RX characteristics configured!
-     * Without these, only TX (device->phone) works, RX (phone->device) is broken.
+    /* NOTE: SS,C0 already enables Microchip Data Service (transparent UART)
+     * This service includes built-in TX and RX characteristics
+     * No need for PC (Private Characteristic) commands - they cause "Err" responses
+     * The module handles bidirectional transparent UART automatically
      */
-
-    // Configure TX characteristic (device sends data to phone via notifications)
-    // UUID: 49535343-1E4D-4BD9-BA61-23C647249616 (Microchip Transparent UART TX)
-    // Properties: 0x10 = Notify
-    DebugPrint("BLE: Setting TX characteristic (device->phone)...\r\n");
-    if (!SendBleCommand("PC,49535343-1E4D-4BD9-BA61-23C647249616,10\r", "AOK", 2000)) {
-        DebugPrint("BLE: WARNING - TX characteristic failed\r\n");
-        failed_commands++;
-    }
-
-    // Configure RX characteristic (phone sends commands to device via write)
-    // UUID: 49535343-8841-43F4-A8D4-ECBE34729BB3 (Microchip Transparent UART RX)
-    // Properties: 0x0C = Write without response (0x04) + Write (0x08)
-    DebugPrint("BLE: Setting RX characteristic (phone->device)...\r\n");
-    if (!SendBleCommand("PC,49535343-8841-43F4-A8D4-ECBE34729BB3,0C\r", "AOK", 2000)) {
-        DebugPrint("BLE: WARNING - RX characteristic failed\r\n");
-        failed_commands++;
-    }
+    DebugPrint("BLE: Transparent UART enabled via SS,C0 (built-in service)\r\n");
 
     // Configure output mode
     DebugPrint("BLE: Setting output mode...\r\n");
