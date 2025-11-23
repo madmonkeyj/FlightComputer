@@ -16,9 +16,9 @@
 
 /* Private variables - fully encapsulated within module */
 
-/* Single byte interrupt reception */
-static uint8_t rx_byte = 0;
-static bool rx_active = false;
+/* UART receive byte - now private to BLE module */
+static uint8_t rxByte = 0;
+static bool uart_rx_active = false;
 
 /* Command processing buffer */
 static uint8_t rx_buffer[128];
@@ -53,7 +53,7 @@ static void ClearResponseBuffer(void);
 static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32_t timeout);
 static void ResetBleModule(void);
 static void BLE_ProcessReceivedByte(uint8_t byte);
-static void BLE_StartInterruptRx(void);
+static void BLE_StartReception(void);
 static void BLE_ProcessCommand(const char* command);
 static void BLE_ProcessIncompleteBuffer(void);
 static bool IsProtocolOverhead(const uint8_t* data, uint16_t length);
@@ -233,7 +233,8 @@ bool BLE_Init(void) {
     DebugPrint("BLE: Initializing BLE module (interrupt mode)...\r\n");
 
     /* Reset all private variables */
-    rx_active = false;
+    rxByte = 0;
+    uart_rx_active = false;
     rx_index = 0;
     last_rx_time = 0;
     last_tx_time = 0;
@@ -261,8 +262,8 @@ bool BLE_Init(void) {
         return false;
     }
 
-    /* Start interrupt reception */
-    BLE_StartInterruptRx();
+    /* Start UART reception */
+    BLE_StartReception();
 
     ble_status = BLE_STATUS_DISCONNECTED; /* Ready but not connected */
     ble_initialized = true;
@@ -334,6 +335,9 @@ void BLE_Update(void) {
     if (!ble_initialized) {
         return;
     }
+
+    /* Ensure UART reception is active */
+    BLE_StartReception();
 
     /* Handle command timeout */
     if (rx_index > 0) {
@@ -515,7 +519,7 @@ bool BLE_GetStatistics(BLE_Statistics_t* stats) {
     stats->total_bytes_sent = total_bytes_sent;
     stats->last_activity_time = last_rx_time;
     stats->connection_count = connection_count;
-    stats->uart_active = rx_active;  /* Interrupt RX active status */
+    stats->uart_active = uart_rx_active;
     stats->status = ble_status;
 
     return true;
@@ -817,53 +821,89 @@ static void BLE_ProcessReceivedByte(uint8_t byte) {
 }
 
 /**
- * @brief Start interrupt-based reception (simple byte-by-byte)
+ * @brief Start UART reception with enhanced error handling
  */
-static void BLE_StartInterruptRx(void) {
-    DebugPrint("BLE: Starting interrupt RX...\r\n");
+static void BLE_StartReception(void) {
+    if (!uart_rx_active) {
+        /* Clear any existing errors first */
+        __HAL_UART_CLEAR_OREFLAG(&huart1);
+        __HAL_UART_CLEAR_NEFLAG(&huart1);
+        __HAL_UART_CLEAR_FEFLAG(&huart1);
+        __HAL_UART_CLEAR_PEFLAG(&huart1);
 
-    /* Start receiving 1 byte at a time via interrupt */
-    if (HAL_UART_Receive_IT(&huart1, &rx_byte, 1) == HAL_OK) {
-        rx_active = true;
-        DebugPrint("BLE: ✅ Interrupt RX active\r\n");
-    } else {
-        rx_active = false;
-        DebugPrint("BLE: ❌ Interrupt RX failed to start\r\n");
+        /* Try to start reception */
+        HAL_StatusTypeDef status = HAL_UART_Receive_IT(&huart1, &rxByte, 1);
+
+        if (status == HAL_OK) {
+            uart_rx_active = true;
+        } else {
+            /* If failed, wait and try once more */
+            HAL_Delay(1);  /* Brief delay */
+
+            if (HAL_UART_Receive_IT(&huart1, &rxByte, 1) == HAL_OK) {
+                uart_rx_active = true;
+            } else {
+                /* Still failing - log for debugging */
+                static uint32_t last_error_log = 0;
+                if (HAL_GetTick() - last_error_log > 5000) {
+                    DebugPrint("BLE: UART reception start failed\r\n");
+                    last_error_log = HAL_GetTick();
+                }
+            }
+        }
     }
 }
 
 /**
- * @brief UART RX Complete Callback - handles interrupt byte reception
+ * @brief UART RX Complete Callback - handles BLE interrupt byte reception
  * @note Called when 1 byte is received via HAL_UART_Receive_IT
- * @note Automatically restarts reception for next byte
+ * @note GPS (USART3) uses DMA, not this callback
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
-        /* Process the received byte */
-        BLE_ProcessReceivedByte(rx_byte);
+        /* BLE UART handling */
+        /* Check for UART errors and handle them inline */
+        if (huart->ErrorCode != HAL_UART_ERROR_NONE) {
+            /* Clear error flags */
+            __HAL_UART_CLEAR_OREFLAG(huart);
+            __HAL_UART_CLEAR_NEFLAG(huart);
+            __HAL_UART_CLEAR_FEFLAG(huart);
+            __HAL_UART_CLEAR_PEFLAG(huart);
 
-        /* Immediately start receiving next byte */
-        HAL_UART_Receive_IT(&huart1, &rx_byte, 1);
+            /* Reset error code */
+            huart->ErrorCode = HAL_UART_ERROR_NONE;
+        } else {
+            /* Process the byte only if no errors */
+            BLE_ProcessReceivedByte(rxByte);
+        }
+
+        /* Restart reception */
+        uart_rx_active = false;
+        if (HAL_UART_Receive_IT(&huart1, &rxByte, 1) == HAL_OK) {
+            uart_rx_active = true;
+        } else {
+            /* If restart fails, try again in main loop */
+            uart_rx_active = false;
+        }
     }
 }
 
-/* Legacy compatibility functions - deprecated with interrupt implementation */
+/* Legacy compatibility functions - simplified since callback is now internal */
 
 /**
- * @brief Legacy byte handler - DEPRECATED (interrupt mode handles bytes automatically)
- * @deprecated Use BLE_Update() in main loop instead
+ * @brief Legacy byte handler - now just calls internal function
  */
 void HandleReceivedByte(uint8_t byte) {
-    (void)byte;
-    /* No-op: Interrupt mode processes bytes via HAL_UART_RxCpltCallback */
+    BLE_ProcessReceivedByte(byte);
+    uart_rx_active = false;
+    BLE_StartReception();
 }
 
 /**
- * @brief Legacy UART start - DEPRECATED (interrupt auto-starts)
- * @deprecated Interrupt RX starts automatically in BLE_Init()
+ * @brief Legacy UART start - calls internal function
  */
 void StartUartReception(void) {
-    /* No-op: Interrupt RX is started in BLE_Init() */
+    BLE_StartReception();
 }
 
 /**
