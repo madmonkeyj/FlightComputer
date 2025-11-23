@@ -143,8 +143,15 @@ static void BLE_ProcessIncompleteBuffer(void) {
 bool BLE_Configure_NoConfig(void) {
     DebugPrint("BLE: Using default configuration (no commands)...\r\n");
 
-    // Just hardware reset and let it boot in default Data mode
+    /* Just hardware reset and let it boot in default Data mode */
     ResetBleModule();
+
+    /* Clear UART errors to ensure clean interrupt RX start */
+    __HAL_UART_CLEAR_OREFLAG(&huart1);
+    __HAL_UART_CLEAR_NEFLAG(&huart1);
+    __HAL_UART_CLEAR_FEFLAG(&huart1);
+    __HAL_UART_CLEAR_PEFLAG(&huart1);
+    huart1.ErrorCode = HAL_UART_ERROR_NONE;
 
     DebugPrint("BLE: Module reset complete\r\n");
     DebugPrint("BLE: Should be in default Data mode (transparent)\r\n");
@@ -255,7 +262,7 @@ bool BLE_Init(void) {
     memset(uart_response_buffer, 0, sizeof(uart_response_buffer));
 
     /* Configure the BLE module */
-    if (!BLE_Configure()) {
+    if (!BLE_Configure_NoConfig()) {
         DebugPrint("BLE: ERROR - Configuration failed\r\n");
         ble_status = BLE_STATUS_ERROR;
         ble_initialized = false;
@@ -731,44 +738,21 @@ static bool SendBleCommand(const char* cmd, const char* expectedResponse, uint32
 static void ResetBleModule(void) {
     DebugPrint("BLE: Hardware resetting BLE module...\r\n");
 
-    /* RN4871 pin mapping: CONFIG=P2_0, LPM=P1_6, RST_BT=RST_N */
-
-    /* Set CONFIG (P2_0) and LPM (P1_6) HIGH for normal active operation */
-    /* Evidence: With these HIGH, module successfully responded with 'CMD>' */
-    HAL_GPIO_WritePin(CONFIG_GPIO_Port, CONFIG_Pin, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(LPM_GPIO_Port, LPM_Pin, GPIO_PIN_SET);
-    DebugPrint("BLE: CONFIG (P2_0) and LPM (P1_6) set HIGH for active mode\r\n");
-
-    HAL_Delay(10); // Brief delay for pins to stabilize
-
-    /* Hardware reset sequence - RST_N is active LOW */
+    /* Ensure reset pin is properly configured as output */
     HAL_GPIO_WritePin(RST_BT_GPIO_Port, RST_BT_Pin, GPIO_PIN_RESET);
-    HAL_Delay(100);  // Hold in reset for 100ms
+    HAL_Delay(500);  /* Increased from 200ms to 500ms */
 
     HAL_GPIO_WritePin(RST_BT_GPIO_Port, RST_BT_Pin, GPIO_PIN_SET);
-    DebugPrint("BLE: Module reset complete, waiting for boot...\r\n");
-    HAL_Delay(500);  // Wait for module to boot
+    HAL_Delay(5000); /* Increased from 3000ms to 5000ms - give module more time */
 
-    // Clear any pending UART data
+    DebugPrint("BLE: Module reset complete\r\n");
+
+    /* Clear any pending UART data */
     uint8_t dummy;
-    int bytes_cleared = 0;
     while (HAL_UART_Receive(&huart1, &dummy, 1, 10) == HAL_OK) {
-        bytes_cleared++;
+        /* Drain any leftover data */
     }
-
-    char debug_msg[64];
-    snprintf(debug_msg, sizeof(debug_msg), "BLE: UART buffer cleared (%d bytes)\r\n", bytes_cleared);
-    DebugPrint(debug_msg);
-
-    // DIAGNOSTIC: Try sending test data to verify UART TX works
-    const char* test_msg = "UART_TEST\r\n";
-    HAL_StatusTypeDef tx_status = HAL_UART_Transmit(&huart1, (uint8_t*)test_msg, strlen(test_msg), 1000);
-    if (tx_status == HAL_OK) {
-        DebugPrint("BLE: UART TX test successful\r\n");
-    } else {
-        snprintf(debug_msg, sizeof(debug_msg), "BLE: WARNING - UART TX test failed (status=%d)\r\n", tx_status);
-        DebugPrint(debug_msg);
-    }
+    DebugPrint("BLE: UART buffer cleared\r\n");
 }
 
 /**
