@@ -6,6 +6,7 @@
   */
 
 #include "ble_module.h"
+#include "gps_module.h"  // For GPS_UART_RxCallback
 #include "debug_utils.h"
 #include "usart.h"
 #include <string.h>
@@ -798,8 +799,7 @@ static void BLE_StartReception(void) {
 }
 
 /**
- * @brief UART RX callback - handles BLE (UART1) interrupt-based reception
- * @note GPS (UART3) uses DMA and has its own HAL_UARTEx_RxEventCallback
+ * @brief UNIFIED UART RX callback - handles both BLE (UART1) and GPS (UART3)
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) {
@@ -828,7 +828,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
             uart_rx_active = false;
         }
     }
-    // Note: GPS (USART3) uses DMA, not interrupts - see HAL_UARTEx_RxEventCallback in gps_module.c
+    else if (huart->Instance == USART3) {
+        // GPS UART handling - delegate to GPS module
+        GPS_UART_RxCallback();
+    }
 }
 
 /* Legacy compatibility functions - simplified since callback is now internal */
