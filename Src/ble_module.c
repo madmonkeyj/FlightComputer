@@ -6,13 +6,12 @@
   */
 
 #include "ble_module.h"
-#include "gps_module.h"  // ADD THIS for GPS_UART_RxCallback
+#include "gps_module.h"  // For GPS_UART_RxCallback
 #include "debug_utils.h"
 #include "usart.h"
 #include <string.h>
 #include <stdio.h>
 #include "data_logger.h"
-#include "inter_mcu_comm.h"
 
 /* Private variables - fully encapsulated within module */
 static uint8_t rx_buffer[128];
@@ -832,10 +831,6 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     else if (huart->Instance == USART3) {
         // GPS UART handling - delegate to GPS module
         GPS_UART_RxCallback();
-    }
-    /* ADD THIS: Inter-MCU communication for UART2 */
-    else if (huart->Instance == USART2) {
-        InterMCU_UART_RxCpltCallback(huart);
     }
 }
 
