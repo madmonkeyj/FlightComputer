@@ -262,11 +262,25 @@ bool BLE_Init(void) {
     memset(uart_response_buffer, 0, sizeof(uart_response_buffer));
 
     /* Configure the BLE module */
-    if (!BLE_Configure_NoConfig()) {
+    if (!BLE_Configure()) {
         DebugPrint("BLE: ERROR - Configuration failed\r\n");
         ble_status = BLE_STATUS_ERROR;
         ble_initialized = false;
         return false;
+    }
+
+    /* CRITICAL: After blocking UART config, reset UART to clean state for interrupt RX */
+    __HAL_UART_CLEAR_OREFLAG(&huart1);
+    __HAL_UART_CLEAR_NEFLAG(&huart1);
+    __HAL_UART_CLEAR_FEFLAG(&huart1);
+    __HAL_UART_CLEAR_PEFLAG(&huart1);
+    huart1.ErrorCode = HAL_UART_ERROR_NONE;
+    huart1.RxState = HAL_UART_STATE_READY;  // Reset RX state machine
+
+    /* Clear any leftover data from configuration */
+    uint8_t dummy;
+    while (HAL_UART_Receive(&huart1, &dummy, 1, 1) == HAL_OK) {
+        /* Drain */
     }
 
     /* Start UART reception */
